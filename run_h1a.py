@@ -6,7 +6,6 @@ import pandas as pd
 from train_pbn_experiment import (
     BATCH_SIZE,
     DEVICE,
-    SUPERVISED_EPOCHS,
     WEIGHT_DECAY,
     load_one_preprocessed_pair,
     extract_spectra_and_target,
@@ -27,6 +26,9 @@ DATASET_NAMES = ["global", "china", "kenya", "indonesia"]
 PREPROCESSING_NAME_FOR_H1A = "none"
 ALGORITHM_NAMES_IN_REPORT_ORDER = ["plsr", "baseline", "rbn"]
 
+H1A_EPOCHS = 400
+H1A_LEARNING_RATE = 1e-4
+
 
 def read_plsr_cell_metrics_from_existing_json(dataset_name):
     plsr_json_path = PLSR_PER_CELL_DIR / f"{dataset_name}_{PREPROCESSING_NAME_FOR_H1A}.json"
@@ -43,7 +45,7 @@ def train_dl_method_and_get_metrics(dataset_name, model_class):
 
     regressor_model = model_class(n_features).to(DEVICE)
     train_supervised_regressor(
-        regressor_model, train_spectra, train_target, SUPERVISED_EPOCHS, BATCH_SIZE, WEIGHT_DECAY
+        regressor_model, train_spectra, train_target, H1A_EPOCHS, BATCH_SIZE, H1A_LEARNING_RATE, WEIGHT_DECAY
     )
 
     train_predictions = predict_for_set(regressor_model, train_spectra)

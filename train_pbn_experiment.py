@@ -73,9 +73,11 @@ def build_loader_features_and_targets(spectra_matrix, target_vector, shuffle, ba
     return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
 
 
-def train_supervised_regressor(regressor_model, train_spectra, train_target, n_epochs, batch_size, weight_decay):
+def train_supervised_regressor(
+    regressor_model, train_spectra, train_target, n_epochs, batch_size, learning_rate, weight_decay
+):
     regressor_model.train()
-    optimizer = torch.optim.Adam(regressor_model.parameters(), lr=LEARNING_RATE, weight_decay=weight_decay)
+    optimizer = torch.optim.Adam(regressor_model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     soc_loss = nn.MSELoss()
     train_loader = build_loader_features_and_targets(
         train_spectra, train_target, shuffle=True, batch_size=batch_size
@@ -204,7 +206,9 @@ def run_one_baseline_cell(dataset_name, preprocessing_name):
     n_features = train_spectra.shape[1]
 
     regressor_model = BaselineSocAnn(n_features).to(DEVICE)
-    train_supervised_regressor(regressor_model, train_spectra, train_target, SUPERVISED_EPOCHS, BATCH_SIZE, WEIGHT_DECAY)
+    train_supervised_regressor(
+        regressor_model, train_spectra, train_target, SUPERVISED_EPOCHS, BATCH_SIZE, LEARNING_RATE, WEIGHT_DECAY
+    )
 
     train_predictions = predict_for_set(regressor_model, train_spectra)
     test_predictions = predict_for_set(regressor_model, test_spectra)
@@ -239,7 +243,9 @@ def run_one_rbn_cell(dataset_name, preprocessing_name):
     n_features = train_spectra.shape[1]
 
     regressor_model = RbnSocAnn(n_features).to(DEVICE)
-    train_supervised_regressor(regressor_model, train_spectra, train_target, SUPERVISED_EPOCHS, BATCH_SIZE, WEIGHT_DECAY)
+    train_supervised_regressor(
+        regressor_model, train_spectra, train_target, SUPERVISED_EPOCHS, BATCH_SIZE, LEARNING_RATE, WEIGHT_DECAY
+    )
 
     train_predictions = predict_for_set(regressor_model, train_spectra)
     test_predictions = predict_for_set(regressor_model, test_spectra)

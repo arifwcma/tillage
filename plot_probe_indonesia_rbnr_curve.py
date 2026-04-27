@@ -4,8 +4,8 @@ import matplotlib.pyplot as plt
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-CURVE_CSV_PATH = PROJECT_ROOT / "results" / "probe_indonesia_curve.csv"
-OUTPUT_FIGURE_PATH = PROJECT_ROOT / "results" / "probe_indonesia_curve.png"
+CURVE_CSV_PATH = PROJECT_ROOT / "results" / "probe_indonesia_rbnr_curve.csv"
+OUTPUT_FIGURE_PATH = PROJECT_ROOT / "results" / "probe_indonesia_rbnr_curve.png"
 
 RMSE_COLOR = "#1f77b4"
 R2_COLOR = "#d62728"
@@ -47,7 +47,7 @@ def annotate_best_test_epoch(ax_left, best_epoch, best_test_rmse, best_test_r2):
     ax_left.annotate(
         f"best test\nepoch {best_epoch}\nRMSE={best_test_rmse:.4f}\nR²={best_test_r2:.4f}",
         xy=(best_epoch, best_test_rmse),
-        xytext=(best_epoch + 30, best_test_rmse + 0.4),
+        xytext=(best_epoch + 20, best_test_rmse + 0.4),
         color=BEST_EPOCH_LINE_COLOR,
         fontsize=9,
         arrowprops={"arrowstyle": "->", "color": BEST_EPOCH_LINE_COLOR, "alpha": 0.7},
@@ -72,7 +72,9 @@ def main():
     annotate_best_test_epoch(ax_left, best_epoch, best_test_rmse, best_test_r2)
     combine_legends(ax_left, ax_right)
 
-    figure.suptitle("RBN learning curve — Indonesia / none (bs=64, lr=1e-5, wd=0, seed=42)")
+    figure.suptitle(
+        "RBNR learning curve — Indonesia / none (bs=64, lr=1e-4, l1=1e-4, l2=1e-3, seed=42)"
+    )
     figure.tight_layout(rect=[0, 0, 1, 0.96])
 
     figure.savefig(OUTPUT_FIGURE_PATH, dpi=150)

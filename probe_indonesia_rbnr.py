@@ -17,16 +17,26 @@ from model_rbn_ann import RbnSocAnn
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-PROBE_OUTPUT_PATH = PROJECT_ROOT / "results" / "probe_indonesia_curve.csv"
+PROBE_OUTPUT_PATH = PROJECT_ROOT / "results" / "probe_indonesia_rbnr_curve.csv"
 
 DATASET_NAME = "indonesia"
 PREPROCESSING_NAME = "none"
 PROBE_BATCH_SIZE = 64
-PROBE_EPOCHS = 1000
+PROBE_EPOCHS = 400
 PROBE_EVAL_EVERY_N_EPOCHS = 1
-PROBE_PRINT_EVERY_N_EPOCHS = 50
-PROBE_WEIGHT_DECAY = 0.0
-PROBE_LEARNING_RATE = 1e-5
+PROBE_PRINT_EVERY_N_EPOCHS = 20
+PROBE_LEARNING_RATE = 1e-4
+PROBE_L1_LAMBDA = 1e-4
+PROBE_L2_WEIGHT_DECAY = 1e-3
+
+
+def compute_l1_penalty(regressor_model):
+    l1_sum = torch.zeros((), device=DEVICE)
+    for parameter in regressor_model.parameters():
+        if not parameter.requires_grad:
+            continue
+        l1_sum = l1_sum + parameter.abs().sum()
+    return l1_sum
 
 
 def evaluate_train_and_test_metrics(regressor_model, train_spectra, train_target, test_spectra, test_target):
@@ -39,16 +49,18 @@ def evaluate_train_and_test_metrics(regressor_model, train_spectra, train_target
     return train_metrics, test_metrics
 
 
-def run_one_training_epoch(regressor_model, optimizer, loss_function, train_loader):
+def run_one_training_epoch(regressor_model, optimizer, mse_loss_function, train_loader, l1_lambda):
     for batch_spectra, batch_target in train_loader:
         optimizer.zero_grad()
         predicted_soc = regressor_model(batch_spectra)
-        loss = loss_function(predicted_soc, batch_target)
-        loss.backward()
+        mse_loss = mse_loss_function(predicted_soc, batch_target)
+        l1_penalty = compute_l1_penalty(regressor_model)
+        total_loss = mse_loss + l1_lambda * l1_penalty
+        total_loss.backward()
         optimizer.step()
 
 
-def train_rbn_with_periodic_evaluation():
+def train_rbnr_with_periodic_evaluation():
     reset_all_random_seeds()
     train_dataframe, test_dataframe = load_one_preprocessed_pair(DATASET_NAME, PREPROCESSING_NAME)
     train_spectra, train_target = extract_spectra_and_target(train_dataframe)
@@ -58,16 +70,20 @@ def train_rbn_with_periodic_evaluation():
     regressor_model = RbnSocAnn(n_features).to(DEVICE)
     regressor_model.train()
     optimizer = torch.optim.Adam(
-        regressor_model.parameters(), lr=PROBE_LEARNING_RATE, weight_decay=PROBE_WEIGHT_DECAY
+        regressor_model.parameters(),
+        lr=PROBE_LEARNING_RATE,
+        weight_decay=PROBE_L2_WEIGHT_DECAY,
     )
-    loss_function = nn.MSELoss()
+    mse_loss_function = nn.MSELoss()
     train_loader = build_loader_features_and_targets(
         train_spectra, train_target, shuffle=True, batch_size=PROBE_BATCH_SIZE
     )
 
     metrics_per_checkpoint = []
     for epoch_index in range(1, PROBE_EPOCHS + 1):
-        run_one_training_epoch(regressor_model, optimizer, loss_function, train_loader)
+        run_one_training_epoch(
+            regressor_model, optimizer, mse_loss_function, train_loader, PROBE_L1_LAMBDA
+        )
         if epoch_index % PROBE_EVAL_EVERY_N_EPOCHS != 0:
             continue
         train_metrics, test_metrics = evaluate_train_and_test_metrics(
@@ -110,13 +126,13 @@ def main():
     print(f"device: {DEVICE}")
     print(
         f"\n>>> {DATASET_NAME} / {PREPROCESSING_NAME}  "
-        f"(rbn, 32 hidden, batch_size={PROBE_BATCH_SIZE}, epochs={PROBE_EPOCHS}, "
-        f"lr={PROBE_LEARNING_RATE}, weight_decay={PROBE_WEIGHT_DECAY}, "
+        f"(rbnr, 32 hidden, batch_size={PROBE_BATCH_SIZE}, epochs={PROBE_EPOCHS}, "
+        f"lr={PROBE_LEARNING_RATE}, l1={PROBE_L1_LAMBDA}, l2_weight_decay={PROBE_L2_WEIGHT_DECAY}, "
         f"eval every {PROBE_EVAL_EVERY_N_EPOCHS} epochs, seed 42)"
     )
 
     started_seconds = time.time()
-    metrics_per_checkpoint = train_rbn_with_periodic_evaluation()
+    metrics_per_checkpoint = train_rbnr_with_periodic_evaluation()
     elapsed_seconds = time.time() - started_seconds
 
     pd.DataFrame(metrics_per_checkpoint).to_csv(PROBE_OUTPUT_PATH, index=False)
