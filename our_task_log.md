@@ -15,6 +15,7 @@ pip install -r requirements.txt
 
 python download_data.py        # downloads + verifies + extracts the public ICRAF/ISRIC MIR library
 python data_loader.py          # builds data/raw/{global,china,kenya,indonesia}.csv
+python make_splits.py          # builds data/splits/{dataset}_split.csv  (single 80/20, group=Batch and labid, strata=SOC quartile, seed=42)
 # ... (further steps appended below as we add them)
 ```
 
@@ -34,6 +35,7 @@ The PDF of the paper itself (`resource/tong.pdf`) is also expected to be placed 
 ```text
 download_data.py                                 # step 1: fetches and extracts the raw dataset
 data_loader.py                                   # step 2: builds raw per-domain CSVs
+make_splits.py                                   # step 3: builds 80/20 train/test split tables
 requirements.txt
 experiment_spec.md                               # full paper-replication spec, ambiguity decisions, numbers to match
 our_task_log.md                                  # this file
@@ -49,7 +51,8 @@ additionals/                                     # gitignored, raw downloaded da
 data/                                            # gitignored, all derived CSVs
   raw/
     {global,china,kenya,indonesia}.csv           # joined + OC-filtered + 4000–600 cm⁻¹
-  splits/                                        # (next step) sample_id → 'train' | 'test'
+  splits/
+    {dataset}_split.csv                          # Batch and labid → 'train' | 'test' (3997+262+245+236 rows)
   preprocessed/                                  # (later) {dataset}_{none|snv|msc|sg|sgd}_{train|test}.csv
 ```
 
@@ -99,4 +102,30 @@ Each row carries 17 reference columns (Batch and labid, sample code, country, pl
 
 Counts verified against paper Table 1 / supplementary Table S1 exactly.
 
-### Step 3 — Train/test split (next)
+### Step 3 — Train/test split (`make_splits.py`)
+
+Pipeline (per dataset in `data/raw/`):
+1. Load only `Batch and labid` and `Org C` columns (the rest are passengers, not needed for splitting).
+2. Bin `Org C` into 4 quartiles via `pd.qcut(q=4)` → strata.
+3. `StratifiedGroupKFold(n_splits=5, shuffle=True, random_state=42)`. Take the *first* split → train (~80%) / test (~20%).
+   - Group key: `Batch and labid`. Strata: SOC quartile.
+   - Why 5 folds rather than a 1-shot 80/20 splitter: scikit-learn provides `StratifiedGroupKFold` (joint group + strata) but not `StratifiedGroupShuffleSplit`. Taking fold 0 of a 5-fold StratifiedGroupKFold is the standard idiom and yields exactly the same kind of single 80/20 split.
+4. Assert no group leakage (no `Batch and labid` appears in both train and test).
+5. Assert test fraction is within ±0.03 of 0.20.
+6. Write `data/splits/{dataset}_split.csv` (columns: `Batch and labid`, `fold`).
+
+Same train/test partition is enforced for all 5 preprocessings — every downstream preprocessing step joins to `data/splits/` instead of re-splitting.
+
+Result (test_frac shown; quartile counts in run log):
+
+| dataset | train | test | test_frac |
+|---|---|---|---|
+| Global    | 3197 | 800 | 0.200 |
+| China     |  209 |  53 | 0.202 |
+| Kenya     |  195 |  50 | 0.204 |
+| Indonesia |  188 |  48 | 0.203 |
+
+Quartile balance is within ±2 samples per quartile in every test set; no group leakage.
+
+### Step 4 — Preprocessing (next)
+The five regimes — None / SNV / MSC / SG / SGD — applied **fit-on-train, transform-on-test**, written as `data/preprocessed/{dataset}_{method}_{train|test}.csv`.
