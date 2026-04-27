@@ -48,13 +48,19 @@ Source: `resource/supplementary.xlsx`, sheet `mmc1` (Table S1).
 1. The paper's §2.1 prose lists slightly lower country n's (China 245, Kenya 239, Indonesia 226) — those reflect the *intersection* of non-missing OC ∩ non-missing pH(H₂O) ∩ non-missing clay used for the descriptive table only. The modelling subsets retain the larger "non-missing OC, complete spectra" sets above. Confirmed against Table S1 columns `pH_H2O_n` and `Clay_n`, which are smaller than `n (OC)`.
 2. Peat / high-organic flag: SOC ≥ 12 % (descriptive only — *not* used to drop samples). Counts: Global 26, China 0, Kenya 3, Indonesia 2.
 
-## 3. Preprocessing options compared (5)
+## 3. Preprocessing options compared (5 in paper, +1 we add for the DL branch)
+
+Paper-specified (used by both PLSR replication and DL experiments):
 
 1. **None** — raw absorbance.
 2. **SNV** — Standard Normal Variate (per-spectrum mean-centre and scale).
 3. **MSC** — Multiplicative Scatter Correction (additive + multiplicative correction relative to a reference; reference = mean spectrum of training set, by convention).
 4. **SG** — Savitzky–Golay smoothing only.
 5. **SGD** — Savitzky–Golay second derivative (with optional smoothing governed by the SG window).
+
+Our addition (DL branch only — not part of paper replication):
+
+6. **MinMax** — per-feature linear rescale to [0, 1]. Min and max fit on train, applied to both train and test. Added so the DL branch has another classical-preprocessing input variant for PBN to be tested against. Intentionally NOT included in the PLSR pipeline (`train_plsr.py` / `summarise_results.py`) because Tong et al.'s Table 1 has no minmax row to compare against.
 
 SG / SGD hyperparameters:
 1. Window length grid: **7–31 points** (odd values assumed).

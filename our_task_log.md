@@ -16,7 +16,7 @@ pip install -r requirements.txt
 python download_data.py        # downloads + verifies + extracts the public ICRAF/ISRIC MIR library
 python data_loader.py          # builds data/raw/{global,china,kenya,indonesia}.csv
 python make_splits.py          # builds data/splits/{dataset}_split.csv  (single 80/20, group=Batch and labid, strata=SOC quartile, seed=42)
-python make_preprocessed.py    # builds data/preprocessed/{dataset}_{none|snv|msc|sg|sgd}_{train|test}.csv  (40 files, ~720 MB total)
+python make_preprocessed.py    # builds data/preprocessed/{dataset}_{none|snv|msc|sg|sgd|minmax}_{train|test}.csv  (48 files, ~860 MB total)
 python verify_preprocessed.py  # optional: sanity-checks SNV/MSC/SG/SGD math on the global train set
 python train_plsr.py           # PLSR sweep over 4 datasets x 5 methods, writes results/per_cell/{dataset}_{method}.json + predictions CSV (~32 min)
 python summarise_results.py    # builds results/table1_replication.csv comparing every cell to paper Table 1
@@ -40,10 +40,15 @@ The PDF of the paper itself (`resource/tong.pdf`) is also expected to be placed 
 download_data.py                                 # step 1: fetches and extracts the raw dataset
 data_loader.py                                   # step 2: builds raw per-domain CSVs
 make_splits.py                                   # step 3: builds 80/20 train/test split tables
-make_preprocessed.py                             # step 4: applies the 5 preprocessings, writes train/test CSVs
+make_preprocessed.py                             # step 4: applies the 6 preprocessings (incl our minmax), writes train/test CSVs
 verify_preprocessed.py                           # one-shot integrity check on preprocessed outputs
 train_plsr.py                                    # step 5: PLSR + CV + one-SE rule + test eval, per (dataset x method)
 summarise_results.py                             # step 5b: table1_replication.csv, paper-vs-ours acceptance flags
+model_baseline_ann.py                            # DL branch: BaselineSocAnn (no preprocessing layer)
+model_pbn_ann.py                                 # DL branch: LearnedPreprocessingAutoencoder + PbnSocAnn (BN as learned preprocessing)
+model_rbn_ann.py                                 # DL branch: RbnSocAnn (fresh BN + MLP head; used by both rbn and r2bn)
+train_pbn_experiment.py                          # DL branch: runs 5 methods (baseline / pbn / plsr_pbn / rbn / r2bn) across 4 datasets x 6 preprocessings = 120 cells
+report_pbn_experiment.py                         # DL branch: prints per-dataset block-format report + 6 head-to-head win counts from cell_results.csv
 requirements.txt
 experiment_spec.md                               # full paper-replication spec, ambiguity decisions, numbers to match
 our_task_log.md                                  # this file
@@ -62,12 +67,16 @@ data/                                            # gitignored, all derived CSVs
   splits/
     {dataset}_split.csv                          # Batch and labid → 'train' | 'test' (3997+262+245+236 rows)
   preprocessed/
-    {dataset}_{none|snv|msc|sg|sgd}_{train|test}.csv   # 40 files, ~720 MB total
+    {dataset}_{none|snv|msc|sg|sgd|minmax}_{train|test}.csv   # 48 files, ~860 MB total
 results/                                         # gitignore-d, all model outputs
   per_cell/
-    {dataset}_{method}.json                      # winning hyperparams + train/test metrics
-    {dataset}_{method}_predictions.csv           # ref cols + observed + predicted, train+test concat
-  table1_replication.csv                         # paper vs ours, with PASS/FAIL flags per criterion
+    {dataset}_{method}.json                      # PLSR: winning hyperparams + train/test metrics
+    {dataset}_{method}_predictions.csv           # PLSR: ref cols + observed + predicted, train+test concat
+  table1_replication.csv                         # PLSR: paper vs ours, with PASS/FAIL flags per criterion
+  pbn_experiment/                                # DL branch: 5 methods compared across all (dataset × preprocessing)
+    cells/{dataset}_{preprocessing}_{baseline|pbn|plsr_pbn|rbn|r2bn}.json
+    predictions/{dataset}_{preprocessing}_{baseline|pbn|plsr_pbn|rbn|r2bn}.csv
+    cell_results.csv                             # aggregate of all 120 cells
 ```
 
 Every CSV row carries: reference columns (Org C, Country, Plotcode, BTOP, BBOT, lat, lon, etc.) + the spectral columns. Reference cols are not used by the model but are kept for downstream analysis.
@@ -84,6 +93,9 @@ Every CSV row carries: reference columns (Org C, Country, Plotcode, BTOP, BBOT, 
 8. RPIQ denominator: IQR of *validation-set observed* SOC.
 9. Inner CV grouping key: same as outer split — `Batch and labid` — so scan-replicate rows of the same physical sample never split across CV folds.
 10. Per-cell predictions file format: 17 reference columns (country, lat/lon, depth, etc.) + `observed` + `predicted`. No spectra. Lets downstream analysis slice errors by any reference attribute without rebuilding the spectra matrix.
+11. **MinMax preprocessing** added as a 6th method (per-feature, fit on train, applied to both folds). Lives in `make_preprocessed.py` / `verify_preprocessed.py`. Intentionally NOT added to `train_plsr.py` / `summarise_results.py` because the paper's Table 1 has no minmax row to compare against — minmax is an addition for the DL branch only.
+12. **PBN (Pretrained BatchNorm) — our DL-branch preprocessing layer.** A BatchNorm1d trained inside an autoencoder (Input -> BN -> Encoder -> Decoder -> Input'); after pretraining, the encoder/decoder are discarded and the BN is reused as a learned preprocessing in front of an MLP regressor. Both `baseline` (raw -> MLP) and `pbn` (raw -> BN -> MLP) share the exact same `Linear(n_features -> 32) -> ReLU -> Linear(32 -> 1)` head for fair comparison. Same 32-hidden head, same Adam/MSE/200 epochs/batch 64/lr 1e-3/seed 42; PBN adds a 100-epoch AE pretrain phase on the train spectra.
+13. **PBN ablations: `plsr_pbn`, `rbn`, `r2bn`** added to the same experiment matrix. `plsr_pbn` = AE-pretrained BN (frozen) → `sklearn.PLSRegression(n_components=15, scale=False)`; tests whether PBN's gain is ANN-specific (LV=15 fixed; covers paper Table 1's 4–14 range without per-cell tuning). `rbn` = fresh BN + same MLP head, 200 supervised epochs; isolates the AE pretrain by comparing against `pbn`. `r2bn` = fresh BN + same MLP head, 400 supervised epochs; controls for the "PBN just got more total compute" critique against `pbn`. All five methods share `data/preprocessed/` inputs, so the preprocessing dimension is held fixed when comparing methods within a cell. Per-cell JSON `configuration` block is method-specific (records actual epoch counts, BN regime, downstream regressor) so the saved metadata is honest.
 
 ---
 
@@ -145,15 +157,16 @@ Quartile balance is within ±2 samples per quartile in every test set; no group 
 
 ### Step 4 — Preprocessing (`make_preprocessed.py`)
 
-For each (dataset × method × split) we write one CSV under `data/preprocessed/`. 4 datasets × 5 methods × 2 splits = **40 files**, ~720 MB. Every output CSV carries the same 17 reference columns (Org C, Country, lat/lon, depths, pH, clay, etc.) + 1763 transformed wavenumber columns (`m3999.7` … `m601.7`).
+For each (dataset × method × split) we write one CSV under `data/preprocessed/`. 4 datasets × 6 methods × 2 splits = **48 files**, ~860 MB. Every output CSV carries the same 17 reference columns (Org C, Country, lat/lon, depths, pH, clay, etc.) + 1763 transformed wavenumber columns (`m3999.7` … `m601.7`).
 
-Per-method math (all implemented in plain numpy / scipy — auditable against Tong et al. §2.3):
+Per-method math (all implemented in plain numpy / scipy — auditable against Tong et al. §2.3, except minmax which we add as an extra DL-branch baseline):
 
-1. **None** — identity. Spectra copied through unchanged so downstream code can treat all 5 methods uniformly (same path schema, same column layout).
+1. **None** — identity. Spectra copied through unchanged so downstream code can treat all methods uniformly (same path schema, same column layout).
 2. **SNV** — Standard Normal Variate, per-spectrum: `(x - mean(x)) / std(x, ddof=1)`. No fit step (independent per row).
 3. **MSC** — Multiplicative Scatter Correction. Reference spectrum = mean of **train** spectra only. For every row: solve `x ≈ a + b·ref` via mean-centred least squares, return `(x - a) / b`. Reference fitted on train, applied to both train and test.
 4. **SG** — Savitzky–Golay smoothing. `scipy.signal.savgol_filter` with window=11, polyorder=2, deriv=0, axis=1, mode="interp". No fit step (purely local convolution).
 5. **SGD** — Savitzky–Golay second derivative. Same as SG but with deriv=2.
+6. **MinMax** (our addition) — per-feature linear rescale. Per-column min and max fit on train; both train and test mapped via `(x - min) / (max - min)`. Train range is exactly [0, 1]; test may slightly exceed (audit shows global test in [-0.0016, 1.0550]). Used only by the DL branch.
 
 Decision on SG/SGD hyperparameters (window=11, polyorder=2):
 
@@ -172,9 +185,11 @@ Sanity check (`verify_preprocessed.py`, run on `global_*_train.csv`):
 | MSC | output shape | matches input |
 | MSC | range | [0.05, 3.26] vs raw [0.12, 3.00] (slight stretch, expected) |
 | SG  | smoothing diff | max |Δ| = 0.145, mean |Δ| = 7.1e-4 (small, as expected) |
+| MinMax | train range | exactly [0.0, 1.0] |
+| MinMax | test range | [-0.0016, 1.0550] (slight overshoot, expected on unseen folds) |
 | SGD | range | [-5.1e-2, 3.6e-2], mean -5.7e-6 (small, centred near 0) |
 
-All 40 outputs produced no NaN / Inf (`np.isfinite(...).all()` asserted per file).
+All 48 outputs produced no NaN / Inf (`np.isfinite(...).all()` asserted per file).
 
 ### Step 5 — PLSR modelling (`train_plsr.py` + `summarise_results.py`)
 
@@ -256,7 +271,60 @@ What is consistent across both reproductions: there is **no single universally-b
 2. Document the divergences here in this log and in `experiment_spec.md` — flag for the discussion section of the future paper.
 3. Acceptance criteria from §10 of `experiment_spec.md` are **not met as written**. Rewriting them to "PLSR vs DL on identical split" is the right move and is implicit in Step 6.
 
-### Step 6 — DL replacement (next)
+### Step 6 — DL replacement (next, mainstream)
 Replace PLSR with a DL model (1D CNN baseline first, then more) on the exact same `data/raw/` + `data/splits/` setup. Same per-cell JSON / predictions CSV layout under `results/per_cell_dl/`. Comparison table: PLSR (us) vs DL (us) vs PLSR (paper).
+
+### Step 7 — DL branch: PBN preprocessing experiment (`train_pbn_experiment.py` + `report_pbn_experiment.py`)
+
+Goal: test the hypothesis that a learned preprocessing (Pretrained BatchNorm = PBN) makes the choice of classical preprocessing irrelevant. If PBN beats the no-PBN baseline in every (dataset × preprocessing) cell, the paper's "tailor preprocessing to region" claim becomes "tailor preprocessing because PLSR is brittle — DL with PBN doesn't need that crutch."
+
+Architecture:
+
+1. `BaselineSocAnn` (`model_baseline_ann.py`): plain MLP — `Linear(1763 → 32) → ReLU → Linear(32 → 1)`.
+2. `LearnedPreprocessingAutoencoder` + `PbnSocAnn` (`model_pbn_ann.py`): autoencoder is `BN(1763) → Linear(1763 → 256) → ReLU → Linear(256 → 64) → Linear(64 → 256) → ReLU → Linear(256 → 1763)`. After Phase A pretrain on train spectra (100 epochs, MSE reconstruction), encoder/decoder are discarded; only the BN is reused. PBN regressor = `BN(pretrained) → Linear(1763 → 32) → ReLU → Linear(32 → 1)`. Both BN and head are trainable in Phase B.
+3. `RbnSocAnn` (`model_rbn_ann.py`): same shape as PbnSocAnn but the BN is initialised fresh — used by both `rbn` (200 supervised epochs) and `r2bn` (400 supervised epochs).
+
+The MLP head is identical across baseline / pbn / rbn / r2bn — the only differences are (a) whether a BN is in front, and (b) whether that BN was AE-pretrained before supervised training, and (c) how many supervised epochs the BN+head pair gets.
+
+Five methods compared per cell:
+
+| method | BN in front | BN pretrained (Phase A AE) | downstream regressor | supervised epochs |
+|---|---|---|---|---|
+| `baseline` | no | — | MLP(32) | 200 |
+| `pbn` | yes | yes | MLP(32) | 200 |
+| `plsr_pbn` | yes (frozen) | yes | PLSR(LV=15, scale=False) | — (one-shot fit) |
+| `rbn` | yes | no | MLP(32) | 200 |
+| `r2bn` | yes | no | MLP(32) | 400 |
+
+`plsr_pbn` exists to test the "is PBN ANN-locked?" critique — if `plsr_pbn` improves over the existing PLSR results (`results/per_cell/`) and over `baseline`, then PBN's benefit transfers to a non-NN downstream regressor. The BN is frozen (eval mode) after Phase A and the BN-output of train spectra is fitted by sklearn `PLSRegression(n_components=15, scale=False)`. LV=15 is fixed (paper's Table 1 LVs span 4–14, so 15 covers the range without per-cell tuning — this keeps the ablation fast and apples-to-apples across cells).
+
+`rbn` and `r2bn` together test the "is PBN's edge just from extra optimisation?" critique:
+
+- `rbn` vs `pbn` isolates the AE pretrain (Phase A) — same architecture, same supervised epochs, only PBN had AE-pretraining.
+- `r2bn` vs `pbn` controls for total compute — R2BN gives the BN+head 400 supervised epochs (≈ PBN's 100 AE + 200 supervised in raw step count), so if PBN still wins, the win is *not* from cumulative gradient steps.
+
+Experiment matrix: 4 datasets × 6 preprocessings × 5 methods = **120 cells**. Per cell:
+
+1. Read `data/preprocessed/{dataset}_{preprocessing}_{train,test}.csv` — the preprocessing has already been applied; the script does no further preprocessing.
+2. Reset all RNG seeds to 42.
+3. Train (Adam, MSE, batch 64, lr 1e-3; epoch counts as in table above; PBN/plsr_pbn add 100 epochs of AE pretrain).
+4. Evaluate on test, compute RMSE / R² / MBD / RPIQ.
+5. Write `results/pbn_experiment/cells/{dataset}_{preprocessing}_{baseline|pbn|plsr_pbn|rbn|r2bn}.json` and `…/predictions/…csv`. The JSON `configuration` block is method-specific (records the actual epoch counts and BN regime for that cell).
+6. Idempotent — cells with an existing JSON are skipped.
+
+After all cells: aggregate into `results/pbn_experiment/cell_results.csv`. `report_pbn_experiment.py` reads that CSV and prints a per-dataset block-format report with all five methods, delta-RMSE per preprocessing for six method pairs (`pbn` vs `baseline`, `pbn` vs `rbn`, `pbn` vs `r2bn`, `plsr_pbn` vs `baseline`, `plsr_pbn` vs `pbn`, `rbn` vs `baseline`), and per-pair win counts.
+
+#### Headline results (test-RMSE win rates, 24 cells per pair)
+
+| comparison | what it tests | result |
+|---|---|---|
+| pbn vs baseline | does PBN beat raw inputs? | **pbn 17/24** (Global 6/6, China 5/6, Kenya 5/6, Indonesia 1/6) |
+| rbn vs baseline | does *any* BN preprocessing help (ignoring the AE pretrain)? | **rbn 18/24** (Global 6/6, China 6/6, Kenya 5/6, Indonesia 1/6) |
+| pbn vs rbn | does the AE pretrain add value over a fresh BN? | **pbn 14/24** — modest, not dominant |
+| pbn vs r2bn | does PBN still beat raw-BN even with 2× supervised epochs? | **pbn 17/24** — yes; PBN's edge is not just compute |
+| plsr_pbn vs baseline | is PBN ANN-locked, or does it transfer? | **plsr_pbn 14/24** — Global 0/6 (PLSR-LV15 underfits at n=3197), China 4/6, Kenya 5/6, Indonesia 5/6 |
+| plsr_pbn vs pbn | which downstream wins? | **pbn 14/24** on Global+China; **plsr_pbn wins 5/6** on each of Kenya+Indonesia (small-data regime favours regularised linear head) |
+
+Reading: most of PBN's lift over `baseline` is actually attributable to the BN itself (raw or pretrained). The AE pretrain provides a smaller, real, but non-dominant additional gain. The claim "PBN works only because it gets more compute" is rejected (R2BN doesn't catch up). The claim "PBN is ANN-locked" is partially rejected — PLSR+PBN beats raw-input baseline on three of the four datasets (everywhere except Global, where 15 LVs is too tight a budget for the size of the global pool). Indonesia is anomalous: every ANN-based method overfits its 188-row train set, and only the regularised PLSR head (`plsr_pbn`) generalises well.
 
 

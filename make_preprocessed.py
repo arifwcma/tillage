@@ -11,7 +11,7 @@ SPLITS_DIR = PROJECT_ROOT / "data" / "splits"
 PREPROCESSED_DIR = PROJECT_ROOT / "data" / "preprocessed"
 
 DATASET_NAMES = ["global", "china", "kenya", "indonesia"]
-METHOD_NAMES = ["none", "snv", "msc", "sg", "sgd"]
+METHOD_NAMES = ["none", "snv", "msc", "sg", "sgd", "minmax"]
 
 GROUP_KEY_COLUMN = "Batch and labid"
 WAVENUMBER_COLUMN_PATTERN = re.compile(r"^m\d+(?:\.\d+)?$")
@@ -115,6 +115,21 @@ def apply_sgd(train_spectra, test_spectra):
     return train_derivative, test_derivative
 
 
+def fit_minmax_per_feature(train_spectra):
+    column_min = train_spectra.min(axis=0, keepdims=True)
+    column_max = train_spectra.max(axis=0, keepdims=True)
+    column_range = column_max - column_min
+    column_range[column_range == 0] = 1.0
+    return column_min, column_range
+
+
+def apply_minmax(train_spectra, test_spectra):
+    column_min, column_range = fit_minmax_per_feature(train_spectra)
+    train_scaled = (train_spectra - column_min) / column_range
+    test_scaled = (test_spectra - column_min) / column_range
+    return train_scaled, test_scaled
+
+
 def transform_with_method(method_name, train_spectra, test_spectra):
     if method_name == "none":
         return apply_no_preprocessing(train_spectra, test_spectra)
@@ -126,6 +141,8 @@ def transform_with_method(method_name, train_spectra, test_spectra):
         return apply_sg(train_spectra, test_spectra)
     if method_name == "sgd":
         return apply_sgd(train_spectra, test_spectra)
+    if method_name == "minmax":
+        return apply_minmax(train_spectra, test_spectra)
     raise ValueError(f"unknown method: {method_name}")
 
 

@@ -45,12 +45,21 @@ def audit_sgd_first_row_signature(none_spectra, sgd_spectra):
     print(f"  SGD mean: {sgd_spectra.mean():.4e}")
 
 
+def audit_minmax(minmax_train_spectra, minmax_test_spectra):
+    print(f"  minmax train range: [{minmax_train_spectra.min():.6f}, {minmax_train_spectra.max():.6f}] (target [0, 1])")
+    print(f"  minmax test  range: [{minmax_test_spectra.min():.6f}, {minmax_test_spectra.max():.6f}] (may slightly exceed [0, 1])")
+    if minmax_train_spectra.min() < -1e-9 or minmax_train_spectra.max() > 1.0 + 1e-9:
+        print("  WARN: minmax train values outside [0, 1]")
+
+
 def main():
     none_train = load_spectra_only(PREPROCESSED_DIR / f"{DATASET_NAME_FOR_AUDIT}_none_train.csv")
     snv_train = load_spectra_only(PREPROCESSED_DIR / f"{DATASET_NAME_FOR_AUDIT}_snv_train.csv")
     msc_train = load_spectra_only(PREPROCESSED_DIR / f"{DATASET_NAME_FOR_AUDIT}_msc_train.csv")
     sg_train = load_spectra_only(PREPROCESSED_DIR / f"{DATASET_NAME_FOR_AUDIT}_sg_train.csv")
     sgd_train = load_spectra_only(PREPROCESSED_DIR / f"{DATASET_NAME_FOR_AUDIT}_sgd_train.csv")
+    minmax_train = load_spectra_only(PREPROCESSED_DIR / f"{DATASET_NAME_FOR_AUDIT}_minmax_train.csv")
+    minmax_test = load_spectra_only(PREPROCESSED_DIR / f"{DATASET_NAME_FOR_AUDIT}_minmax_test.csv")
 
     print(f"audit on dataset: {DATASET_NAME_FOR_AUDIT} (train, n={len(none_train)})")
     print("\n[SNV]")
@@ -61,6 +70,8 @@ def main():
     audit_sg_versus_none(none_train, sg_train)
     print("\n[SGD]")
     audit_sgd_first_row_signature(none_train, sgd_train)
+    print("\n[MINMAX]")
+    audit_minmax(minmax_train, minmax_test)
 
 
 if __name__ == "__main__":
