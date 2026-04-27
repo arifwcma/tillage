@@ -78,8 +78,6 @@ Acknowledge genuinely sharp insights briefly — but only when truly earned. Nev
 
 Every single response should start with a label like R1, R2 etc. so that I can easily defer back to previous responses.
 
-We will use uv for python venv.
-
 Always prefer readability over short/clever coding. Unroll comprehensions into explicit loops when it aids clarity.
 
 Use function parameters only where they naturally fit (i.e. the caller truly needs to vary them). Otherwise keep parameters minimal — hard-code constants inside the function that uses them. Number of parameters is proportional to unreadability.
