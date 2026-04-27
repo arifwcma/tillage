@@ -18,9 +18,10 @@ python data_loader.py          # builds data/raw/{global,china,kenya,indonesia}.
 python make_splits.py          # builds data/splits/{dataset}_split.csv  (single 80/20, group=Batch and labid, strata=SOC quartile, seed=42)
 python make_preprocessed.py    # builds data/preprocessed/{dataset}_{none|snv|msc|sg|sgd|minmax}_{train|test}.csv  (48 files, ~860 MB total)
 python verify_preprocessed.py  # optional: sanity-checks SNV/MSC/SG/SGD math on the global train set
-python train_plsr.py           # PLSR sweep over 4 datasets x 5 methods, writes results/per_cell/{dataset}_{method}.json + predictions CSV (~32 min)
+python train_plsr.py           # PLSR sweep over 4 datasets x 6 preprocessings, writes results/per_cell/{dataset}_{method}.json + predictions CSV (~32 min)
 python summarise_results.py    # builds results/table1_replication.csv comparing every cell to paper Table 1
 python train_plsr_fixed_lv.py  # Step 5b diagnostic: refit PLSR with paper's exact LV count per cell. Writes results/per_cell_fixed_lv/ + table1_replication_fixed_lv.csv (~12 s)
+python run_h1a.py              # Stage 1: 1 preprocessing (none) x 4 datasets x 3 algorithms (PLSR, baseline, RBN). Writes results/h1a_results.csv (~5 min)
 
 # Optional spectra-visualisation scripts (read data/preprocessed/, write results/*.png; ~30 s each):
 python plot_preprocessed_spectra.py    # 6x4 mean-spectrum grid (methods x regions)
@@ -56,8 +57,9 @@ plot_one_sample_spectra.py                       # viz: one random sample traced
 plot_three_samples_spectra.py                    # viz: three random samples per region, color-consistent across methods
 model_baseline_ann.py                            # DL branch: BaselineSocAnn (plain MLP, no preprocessing layer)
 model_rbn_ann.py                                 # DL branch: RbnSocAnn (BatchNorm1d front + MLP head, fresh BN learned jointly with head)
-train_pbn_experiment.py                          # DL branch: runs 2 methods (baseline / rbn) across 4 datasets x 6 preprocessings = 48 cells
-report_pbn_experiment.py                         # DL branch: prints per-dataset block-format report + rbn-vs-baseline win counts from cell_results.csv
+train_pbn_experiment.py                          # DL branch: runs 2 DL methods (baseline / rbn) across 4 datasets x 6 preprocessings = 48 DL cells
+report_pbn_experiment.py                         # DL branch: prints per-dataset block-format report + per-pair win counts from cell_results.csv
+run_h1a.py                                       # H1A: 1 preprocessing (none) x 4 datasets x 3 algorithms = 12 cells; writes results/h1a_results.csv
 requirements.txt
 experiment_spec.md                               # full paper-replication spec, ambiguity decisions, numbers to match
 our_task_log.md                                  # this file
@@ -91,7 +93,8 @@ results/                                         # gitignore-d, all model output
   pbn_experiment/                                # DL branch: 2 methods (baseline, rbn) compared across all (dataset × preprocessing). Folder name is historical.
     cells/{dataset}_{preprocessing}_{baseline|rbn}.json
     predictions/{dataset}_{preprocessing}_{baseline|rbn}.csv
-    cell_results.csv                             # aggregate of all 48 cells
+    cell_results.csv                             # aggregate of all 48 DL cells
+  h1a_results.csv                                # H1A: PLSR / baseline / RBN on `_none_` × 4 datasets (12 rows)
 ```
 
 Every CSV row carries: reference columns (Org C, Country, Plotcode, BTOP, BBOT, lat, lon, etc.) + the spectral columns. Reference cols are not used by the model but are kept for downstream analysis.
@@ -110,7 +113,7 @@ Every CSV row carries: reference columns (Org C, Country, Plotcode, BTOP, BBOT, 
 10. Per-cell predictions file format: 17 reference columns (country, lat/lon, depth, etc.) + `observed` + `predicted`. No spectra. Lets downstream analysis slice errors by any reference attribute without rebuilding the spectra matrix.
 11. **MinMax preprocessing** added as a 6th method (per-feature, fit on train, applied to both folds). Lives in `make_preprocessed.py` / `verify_preprocessed.py`. **Update 27 Apr 2026:** Arif asked for minmax to be run through the PLSR pipeline too, so `train_plsr.py` / `summarise_results.py` / `print_plsr_tables.py` now include it; paper-comparison columns are NaN in `table1_replication.csv` since paper Table 1 has no minmax row. The MinMax math is duplicated in `train_plsr.py::apply_minmax_per_feature` so it can be re-fit per inner CV fold (no leakage).
 12. **RBN (BatchNorm front-end) — our DL-branch preprocessing layer.** A `nn.BatchNorm1d(n_features)` prepended to a small MLP head (`Linear(n_features → 32) → ReLU → Linear(32 → 1)`). The BN is initialised fresh (no pretraining) and learned jointly with the head under the same supervised loss. Both `baseline` (raw → MLP) and `rbn` (raw → BN → MLP) share the exact same head for fair comparison. Same Adam / MSE / 200 epochs / batch 64 / lr 1e-3 / seed 42 across both methods. The shipped BN's running mean/var are applied to test spectra in eval mode, which is what makes it a *trained preprocessor* and not just an in-network normalisation layer.
-13. **Dropped ablations (28 Apr 2026): `pbn`, `plsr_pbn`, `r2bn`, `p2bn`.** Earlier we ran four BN-variant ablations (AE-pretrained BN; AE-pretrained BN + PLSR head; fresh BN with double the supervised epochs; one BN shared between SOC head and an AE side-branch with joint loss). All four were dropped because they didn't materially shift the story: RBN ≥ PBN, and the others were marginal or harmful. Full 6-method code + cell artefacts preserved at git tag **`before_drops_1`** for resurrection on demand. Resurrect by `git checkout before_drops_1 -- <file>`. Both methods share `data/preprocessed/` inputs, so the preprocessing dimension is held fixed when comparing `baseline` vs `rbn` within a cell.
+13. **Dropped ablations (28 Apr 2026): `pbn`, `plsr_pbn`, `r2bn`, `p2bn`.** Earlier we ran four BN-variant ablations (AE-pretrained BN; AE-pretrained BN + PLSR head; fresh BN with double the supervised epochs; one BN shared between SOC head and an AE side-branch with joint loss). All four were dropped because they didn't materially shift the experimental story relative to RBN, and the AE-based methods added pipeline complexity not justified by the win rate. Full 6-method code + cell artefacts preserved at git tag **`before_drops_1`** for resurrection on demand. Resurrect by `git checkout before_drops_1 -- <file>`. The three live algorithms (`plsr`, `baseline`, `rbn`) all consume `data/preprocessed/` inputs, so the preprocessing dimension is held fixed when comparing algorithms within a cell.
 
 ---
 
@@ -324,52 +327,51 @@ Replace PLSR with a DL model (1D CNN baseline first, then more) on the exact sam
 
 ### Step 7 — DL branch: BN-front-end preprocessing experiment (`train_pbn_experiment.py` + `report_pbn_experiment.py`)
 
-Goal: test the hypothesis that a learned preprocessing (a `BatchNorm1d` front-end = RBN) makes the choice of classical preprocessing irrelevant. If RBN beats the no-BN `baseline` in every (dataset × preprocessing) cell, the paper's "tailor preprocessing to region" claim becomes "tailor preprocessing because PLSR is brittle — DL with a learned BN front-end doesn't need that crutch."
+Goal: test the hypothesis that a learned preprocessing (a `BatchNorm1d` front-end = RBN) makes the choice of classical preprocessing irrelevant. If RBN beats both the no-BN MLP `baseline` AND the paper's PLSR algorithm in every (dataset × preprocessing) cell, the paper's "tailor preprocessing to region" claim becomes "tailor preprocessing because PLSR is brittle — DL with a learned BN front-end doesn't need that crutch."
 
-History: an earlier version of this step ran six methods (`baseline`, `pbn`, `plsr_pbn`, `rbn`, `r2bn`, `p2bn`) where the four extras were AE-pretrained / longer-trained / joint-AE-loss variants of the BN idea. They were dropped on 28 Apr 2026 because RBN ≥ PBN and the others were marginal/harmful (see Decision #13). Code + artefacts at git tag `before_drops_1`. Folder name `results/pbn_experiment/` is historical — the matrix is now `4 datasets × 6 preprocessings × 2 methods = 48 cells`.
+History: an earlier version of this step ran six methods (`baseline`, `pbn`, `plsr_pbn`, `rbn`, `r2bn`, `p2bn`) where the four extras were AE-pretrained / longer-trained / joint-AE-loss variants of the BN idea. They were dropped on 28 Apr 2026 (see Decision #13). Code + artefacts at git tag `before_drops_1`. Folder name `results/pbn_experiment/` is historical — the current matrix is `4 datasets × 6 preprocessings × 3 algorithms = 72 cells`.
 
 #### Hypotheses being proven
 
 The Step 7 matrix exists to falsify or confirm two specific claims about BatchNorm-as-preprocessor. The BN is learned jointly with the MLP head on the train spectra; its running mean/var are then applied to test spectra in eval mode. That is what makes it a *trained preprocessor*, not just an in-network normalisation layer.
 
-1. **H1A — BN-as-preprocessor beats no preprocessing.** Without any classical preprocessing on the input, prepending a learnable BN to the MLP head outperforms the raw-input baseline. Test slice: the 4 `_none_` cells (one per dataset). Metric: `rbn` test-RMSE < `baseline` test-RMSE in ≥ 3 of 4 cells. If true, BN-on-raw is itself a viable replacement for hand-crafted preprocessing.
-2. **H1B — BN-as-preprocessor still helps even when classical preprocessing is already applied.** Even when the input has already been transformed by SNV / MSC / SG / SGD / MinMax, prepending the BN still beats the no-BN baseline. Test slice: the 20 non-`_none_` cells (4 datasets × 5 classical methods). Metric: `rbn` test-RMSE < `baseline` test-RMSE in a clear majority (≥ 14 of 20). If true, BN's contribution is *additive* on top of any classical preprocessing — i.e. the choice of classical method matters less once the BN front-end is in place, which is exactly what would invalidate the paper's "tailor preprocessing to region" finding for DL pipelines.
+1. **H1A — BN-as-preprocessor beats every alternative on raw input.** Without any classical preprocessing, prepending a learnable BN to the MLP head outperforms BOTH the no-BN MLP `baseline` AND the paper's PLSR algorithm. Test slice: 1 preprocessing (`none`) × 4 datasets × 3 algorithms (PLSR, baseline, RBN) = 12 cells. Metric: `rbn` test-RMSE is the lowest of the three for every dataset (4/4). If true, BN-on-raw is itself a viable replacement for hand-crafted preprocessing AND beats the paper's algorithm without any preprocessing aid.
+2. **H1B — BN-as-preprocessor still beats every alternative even with classical preprocessing applied.** Even when the input has already been transformed by SNV / MSC / SG / SGD / MinMax, RBN still beats both the no-BN `baseline` and PLSR. Test slice: 5 preprocessings × 4 datasets × 3 algorithms = 60 cells. Metric: `rbn` test-RMSE is the lowest of the three in a clear majority of the 20 (preprocessing × dataset) cells. If true, BN's contribution is *additive* on top of any classical preprocessing — i.e. the choice of classical method matters less once the BN front-end is in place, which is exactly what would invalidate the paper's "tailor preprocessing to region" finding for DL pipelines.
 
 H1A and H1B are deliberately partitioned by the `_none_` axis so each hypothesis can be confirmed/rejected independently. Strong H1A + weak H1B = "BN replaces preprocessing"; weak H1A + strong H1B = "BN augments preprocessing"; strong on both = "BN dominates the preprocessing axis entirely" (the strongest possible counter to Tong et al.).
 
 Architecture:
 
-1. `BaselineSocAnn` (`model_baseline_ann.py`): plain MLP — `Linear(1763 → 32) → ReLU → Linear(32 → 1)`.
-2. `RbnSocAnn` (`model_rbn_ann.py`): identical MLP head with `BatchNorm1d(1763)` prepended. BN is initialised fresh, learned jointly with the head.
+1. **PLSR** — `sklearn.cross_decomposition.PLSRegression(scale=False)`, mean-centred predictors, LV count picked per cell via repeated 10-fold CV + one-SE rule (full pipeline in `train_plsr.py`). Already run for all 6 preprocessings × 4 datasets in Step 5; cell JSONs in `results/per_cell/`.
+2. **`BaselineSocAnn`** (`model_baseline_ann.py`): plain MLP — `Linear(1763 → 32) → ReLU → Linear(32 → 1)`.
+3. **`RbnSocAnn`** (`model_rbn_ann.py`): identical MLP head with `BatchNorm1d(1763)` prepended. BN is initialised fresh, learned jointly with the head.
 
-The MLP head is identical across `baseline` and `rbn`; only the BN front-end differs.
+The MLP head is identical across `baseline` and `rbn`; only the BN front-end differs. PLSR is the paper's algorithm and serves as the "is BN beating the published method?" anchor.
 
-Two methods compared per cell:
+Three algorithms compared per cell:
 
-| method | BN in front | BN learned how | downstream regressor | epochs |
+| algorithm | BN in front | downstream regressor | training | epochs |
 |---|---|---|---|---|
-| `baseline` | no | — | MLP(32) | 200 sup |
-| `rbn` | yes | joint with head (fresh BN, no pretrain) | MLP(32) | 200 sup |
+| `plsr` | no | PLSR (LV picked by 5×10 CV + one-SE rule) | mean-centred LS via NIPALS | 1-shot |
+| `baseline` | no | MLP(32) | Adam / MSE / batch 64 / lr 1e-3 | 200 sup |
+| `rbn` | yes (fresh BN, no pretrain) | MLP(32) | Adam / MSE / batch 64 / lr 1e-3 | 200 sup |
 
-Experiment matrix: 4 datasets × 6 preprocessings × 2 methods = **48 cells**. Per cell:
+Experiment matrix: 4 datasets × 6 preprocessings × 3 algorithms = **72 cells**. Per DL cell:
 
 1. Read `data/preprocessed/{dataset}_{preprocessing}_{train,test}.csv` — the preprocessing has already been applied; the script does no further preprocessing.
 2. Reset all RNG seeds to 42.
 3. Train (Adam, MSE, batch 64, lr 1e-3, 200 supervised epochs).
 4. Evaluate on test, compute RMSE / R² / MBD / RPIQ.
-5. Write `results/pbn_experiment/cells/{dataset}_{preprocessing}_{baseline|rbn}.json` and `…/predictions/…csv`. The JSON `configuration` block records seed, batch size, learning rate, epoch count, and a `uses_batchnorm` flag.
-6. Idempotent — cells with an existing JSON are skipped.
 
-After all cells: aggregate into `results/pbn_experiment/cell_results.csv`. `report_pbn_experiment.py` reads that CSV and prints a per-dataset block-format report plus the `rbn` vs `baseline` win count.
+PLSR cells are populated by `train_plsr.py` (Step 5). DL cells will be populated by the H1A and H1B runners described below.
 
-#### Headline result (test-RMSE win rate, 24 cells)
+#### Execution plan (H1A first, then H1B)
 
-| comparison | what it tests | result |
-|---|---|---|
-| rbn vs baseline | does the BN front-end beat raw / classically-preprocessed inputs? | **rbn 18/24** (Global 6/6, China 6/6, Kenya 5/6, Indonesia 1/6) |
+H1A and H1B will be evaluated in two stages, with H1A as the gate:
 
-Indonesia is the known weak cell — n_train = 188, both methods overfit; `rbn` wins only on `_sgd_` there. See `indonesia.md` for the (un-executed) reduced-epoch overfitting probe brief, kept alive as future work.
+1. **Stage 1 — H1A (12 cells).** Run only the `_none_` slice — 1 preprocessing × 4 datasets × 3 algorithms (PLSR, baseline, RBN) — and dump a single CSV (`results/h1a_results.csv`). Decide whether RBN is the per-dataset winner across all 4 datasets. If yes, proceed; if not, iterate on the RBN architecture / training contract until H1A is satisfied.
+2. **Stage 2 — H1B (60 cells).** Only after H1A passes: run the remaining 5 preprocessings × 4 datasets × 3 algorithms and report whether RBN's edge persists when classical preprocessing is also applied.
 
-Reading: H1A is supported (rbn beats baseline on the 4 `_none_` cells in 3/4 datasets — Indonesia is the only loss). H1B is supported on Global / China / Kenya but not Indonesia, so the headline is "BN augments preprocessing on three of four regions; Indonesia overfits regardless of preprocessing".
+Headline numbers from any earlier exploratory runs are intentionally not tabulated here — H1A will be re-evaluated cleanly via `run_h1a.py`.
 
 

@@ -16,11 +16,12 @@ Read `.cursor/project.md` and `.cursor/instructions.md` first — they cover the
 1. Steps 1-5 done: download → join/filter → 80/20 grouped+stratified split → 5 preprocessings (now 6 — see point 4) → PLSR with repeated 10-fold CV + one-SE rule + test eval.
 2. **Step 5b done (27 Apr 2026)** — diagnostic ablation: re-fit PLSR with the paper's reported LV count (LV one-SE picker bypassed), keeping our SG/SGD window/polyorder. Goal was to isolate whether the LV-selection rule or the unknown split seed drives our R² gap from paper Table 1. **Result: forcing paper LVs made R² *worse* in 18/20 cells, not better.** Conclusion: the split seed (unrecoverable from paper) dominates the divergence; the one-SE rule definition is secondary. Our higher LVs were *compensating* for a harder test draw. Artefacts: `train_plsr_fixed_lv.py`, `results/per_cell_fixed_lv/`, `results/table1_replication_fixed_lv.csv`. **All publishable-spec stones are now turned**: data, n, window, algorithm, mean-centring, CV protocol, stratification, grouping, metrics, peat handling, duplicate handling, LV count — all match. Two unobservables remain: split seed (paper says "fixed seed" without value) and SE definition for the one-SE rule. Decision: accept current single-split + seed=42 PLSR results as our reproduction baseline; the qualitative claim (regional preprocessing dependence) survives. **Do not chase exact paper numerics further** unless an author email yields the seed.
 3. **PLSR-minmax added (27 Apr 2026)** — Arif asked for the 6th preprocessing `minmax` to be run through PLSR too; `train_plsr.py` / `summarise_results.py` / `print_plsr_tables.py` now include minmax. `results/table1_replication.csv` has 24 rows (paper columns NaN for the 4 minmax rows since paper Table 1 has no minmax). MinMax math is duplicated in `train_plsr.py::apply_minmax_per_feature` so it can be re-fit per inner CV fold (no leakage).
-4. **Step 6 / Step 7 — DL replacement (current state)**. The DL replacement IS the BN-front-end matrix, **2 methods only** after deliberate trim (28 Apr 2026):
+4. **Step 6 / Step 7 — DL replacement (planned matrix, no headline numbers yet)**. The DL replacement is the BN-front-end matrix, **2 DL algorithms** plus the paper's PLSR as a side-by-side anchor:
+   - `plsr` — paper's algorithm, already populated for all 24 cells in `results/per_cell/` from Step 5.
    - `baseline` — MLP only (`Linear(1763 → 32) → ReLU → Linear(32 → 1)`), 200 sup epochs.
    - `rbn` — same MLP head with a learnable `BatchNorm1d(1763)` in front, 200 sup epochs. **This is the main DL algorithm.**
-   We previously also ran `pbn`, `plsr_pbn`, `r2bn`, `p2bn` ablations (full 144-cell matrix). All four were dropped because they didn't materially shift the story (RBN ≥ PBN, others marginal or harmful). The full 6-method code + cell JSONs are preserved at git tag `before_drops_1` if a reviewer asks for any specific ablation. Resurrect by `git checkout before_drops_1 -- <file>`.
-   Matrix: 4 datasets × 6 preprocessings × 2 methods = **48 cells**. Models in `model_baseline_ann.py` and `model_rbn_ann.py`. Runner `train_pbn_experiment.py`. Outputs in `results/pbn_experiment/cells/`, `…/predictions/`, `…/cell_results.csv` (folder name historical). Headline win-rate (rbn vs baseline on test RMSE): **18/24 cells**, weak only on Indonesia (1/6 — overfitting on 188-row train). CPU runtime: ~7 min from scratch for all 48 cells.
+   Previous ablations (`pbn`, `plsr_pbn`, `r2bn`, `p2bn`) were dropped on 28 Apr 2026 — full 6-method code + cell JSONs preserved at git tag `before_drops_1`. Resurrect by `git checkout before_drops_1 -- <file>`.
+   Full matrix: 4 datasets × 6 preprocessings × 3 algorithms = **72 cells**. Execution is gated on H1A first: `run_h1a.py` evaluates only the 12 `_none_` cells (1 preprocessing × 4 datasets × 3 algorithms) and dumps `results/h1a_results.csv`. Only if RBN is the per-dataset winner across all 4 datasets do we proceed to H1B (the remaining 60 cells). DL models in `model_baseline_ann.py` and `model_rbn_ann.py`; full 48-DL-cell runner in `train_pbn_experiment.py` (writes `results/pbn_experiment/`). Headline H1A / H1B numbers are intentionally absent pending the gated re-run.
 
 ## Important truths about the paper replication (don't relearn the hard way)
 
@@ -47,14 +48,15 @@ Read `.cursor/project.md` and `.cursor/instructions.md` first — they cover the
 
 ## What to do next
 
-PLSR replication is **done as far as the paper permits** (see Status point 2). The DL replacement (RBN vs baseline) is also **done at first pass** (see Status point 4). Drive Arif from here.
+PLSR replication is **done as far as the paper permits** (see Status point 2). The DL replacement is **specified but not yet evaluated** (see Status point 4) — Arif's plan is gated:
 
-1. Possible next directions (await Arif's call):
+1. **Stage 1 — H1A.** Run `python run_h1a.py` to populate `results/h1a_results.csv` (12 cells: 1 preprocessing `none` × 4 datasets × 3 algorithms `plsr/baseline/rbn`). Decision criterion: RBN is the per-dataset winner on test RMSE in all 4 datasets. If RBN does *not* sweep H1A, iterate on the RBN architecture / training contract before going further — H1B is meaningless until H1A passes.
+2. **Stage 2 — H1B (only after H1A passes).** Run the remaining 5 preprocessings × 4 datasets × 3 algorithms = 60 cells. Existing `train_pbn_experiment.py` already produces the 48 DL cells; PLSR side comes from `results/per_cell/`.
+3. Optional follow-ups, kept on the back burner until H1A + H1B settle:
    - Companion `summarise_rbn_vs_plsr.py`: side-by-side table RBN-ours vs PLSR-ours vs PLSR-paper, with paired Wilcoxon + Holm tests the paper used.
-   - Indonesia overfitting probe (reduced epochs / early stopping / multi-seed). Brief in `indonesia.md` was written for `pbn` and is now stale; rewritten for `rbn`.
    - 1D CNN replacement of the MLP head (Conv1d → BN → ReLU → MaxPool ×3, then 2 dense layers, ~50k params; Adam, MSE, cosine-anneal LR).
-   - Multi-seed sensitivity band on RBN (5 seeds, both methods × 48 cells = 480 runs ≈ 1 hour CPU).
-2. The trimmed DL experiment lives in `train_pbn_experiment.py` + `model_baseline_ann.py` + `model_rbn_ann.py`. The dropped ablation models (`model_pbn_ann.py`, `model_p2bn_ann.py`) were deleted from `master` but still exist at tag `before_drops_1`. Indonesia is the known outlier — both `baseline` and `rbn` overfit its 188-row train set (RBN wins only 1/6 preprocessings there). Don't draw conclusions about RBN's overall efficacy from Indonesia in isolation.
+   - Multi-seed sensitivity band on RBN (5 seeds × 72 cells = 360 runs ≈ 1 hour CPU).
+4. The DL code lives in `model_baseline_ann.py` + `model_rbn_ann.py` + `train_pbn_experiment.py` + `run_h1a.py`. The dropped ablation models (`model_pbn_ann.py`, `model_p2bn_ann.py`) were deleted from `master` but still exist at tag `before_drops_1`.
 
 ## Inventory of artefacts created during PLSR-replication phase (incl. Step 5b)
 
