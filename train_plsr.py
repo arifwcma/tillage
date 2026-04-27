@@ -15,7 +15,7 @@ RESULTS_DIR = PROJECT_ROOT / "results"
 PER_CELL_DIR = RESULTS_DIR / "per_cell"
 
 DATASET_NAMES = ["china", "kenya", "indonesia", "global"]
-METHOD_NAMES = ["none", "snv", "msc", "sg", "sgd"]
+METHOD_NAMES = ["none", "snv", "msc", "sg", "sgd", "minmax"]
 
 GROUP_KEY_COLUMN = "Batch and labid"
 SOC_COLUMN = "Org C"
@@ -89,6 +89,16 @@ def msc_correct(spectra_matrix, reference_spectrum):
         intercept = row_spectrum.mean() - slope * reference_spectrum.mean()
         corrected[row_index] = (row_spectrum - intercept) / slope
     return corrected
+
+
+def apply_minmax_per_feature(train_spectra, validation_spectra):
+    column_min = train_spectra.min(axis=0, keepdims=True)
+    column_max = train_spectra.max(axis=0, keepdims=True)
+    column_range = column_max - column_min
+    column_range[column_range == 0] = 1.0
+    train_scaled = (train_spectra - column_min) / column_range
+    validation_scaled = (validation_spectra - column_min) / column_range
+    return train_scaled, validation_scaled
 
 
 def apply_savgol_with_parameters(train_spectra, validation_spectra, window_length, polynomial_order, derivative_order):
@@ -212,6 +222,8 @@ def select_preprocessing_for_cv(method_name):
         return [{"label": "snv"}]
     if method_name == "msc":
         return [{"label": "msc"}]
+    if method_name == "minmax":
+        return [{"label": "minmax"}]
     if method_name == "sg":
         return [
             {"label": "sg", "window": w, "polyorder": p, "deriv": 0}
@@ -235,6 +247,8 @@ def transform_with_preprocessing_specification(method_specification, train_spect
         return apply_snv(train_spectra, validation_spectra)
     if label == "msc":
         return apply_msc(train_spectra, validation_spectra)
+    if label == "minmax":
+        return apply_minmax_per_feature(train_spectra, validation_spectra)
     return apply_savgol_with_parameters(
         train_spectra,
         validation_spectra,

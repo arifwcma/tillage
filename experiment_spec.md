@@ -60,7 +60,7 @@ Paper-specified (used by both PLSR replication and DL experiments):
 
 Our addition (DL branch only — not part of paper replication):
 
-6. **MinMax** — per-feature linear rescale to [0, 1]. Min and max fit on train, applied to both train and test. Added so the DL branch has another classical-preprocessing input variant for PBN to be tested against. Intentionally NOT included in the PLSR pipeline (`train_plsr.py` / `summarise_results.py`) because Tong et al.'s Table 1 has no minmax row to compare against.
+6. **MinMax** — per-feature linear rescale to [0, 1]. Min and max fit on train, applied to both train and test. Added so the DL branch has another classical-preprocessing input variant for the BN-front-end (RBN) to be tested against. Now also included in the PLSR pipeline (added 27 Apr 2026 on Arif's request); paper-comparison columns for the four minmax rows in `results/table1_replication.csv` are NaN since Tong et al.'s Table 1 has no minmax row.
 
 SG / SGD hyperparameters:
 1. Window length grid: **7–31 points** (odd values assumed).

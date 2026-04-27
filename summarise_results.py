@@ -8,7 +8,7 @@ PER_CELL_DIR = PROJECT_ROOT / "results" / "per_cell"
 RESULTS_DIR = PROJECT_ROOT / "results"
 
 DATASET_NAMES = ["global", "china", "kenya", "indonesia"]
-METHOD_NAMES = ["none", "snv", "msc", "sg", "sgd"]
+METHOD_NAMES = ["none", "snv", "msc", "sg", "sgd", "minmax"]
 
 PAPER_TABLE_1 = {
     ("global", "none"):    {"factors": 10, "rmse": 2.077, "r2": 0.626, "mbd":  0.006, "rpiq": 0.426},
@@ -108,6 +108,34 @@ def build_comparison_row(dataset_name, method_name, cell_record, paper_row):
     }
 
 
+def build_comparison_row_without_paper_reference(dataset_name, method_name, cell_record):
+    winner = cell_record["winner"]
+    test_metrics = cell_record["test_metrics"]
+    method_label = format_method_label(method_name, winner["preprocessing_specification"])
+    return {
+        "dataset": dataset_name,
+        "method": method_label,
+        "lv_paper": float("nan"),
+        "lv_ours": winner["lv_count"],
+        "rmse_paper": float("nan"),
+        "rmse_ours": test_metrics["rmse"],
+        "rmse_rel_diff": float("nan"),
+        "r2_paper": float("nan"),
+        "r2_ours": test_metrics["r2"],
+        "r2_abs_diff": float("nan"),
+        "mbd_paper": float("nan"),
+        "mbd_ours": test_metrics["mbd"],
+        "mbd_abs_diff": float("nan"),
+        "rpiq_paper": float("nan"),
+        "rpiq_ours": test_metrics["rpiq"],
+        "lv_pass": False,
+        "rmse_pass": False,
+        "r2_pass": False,
+        "mbd_pass": False,
+        "all_pass": False,
+    }
+
+
 def collect_all_comparison_rows():
     rows = []
     for dataset_name in DATASET_NAMES:
@@ -115,8 +143,11 @@ def collect_all_comparison_rows():
             cell_record = load_one_cell_record(dataset_name, method_name)
             if cell_record is None:
                 continue
-            paper_row = PAPER_TABLE_1[(dataset_name, method_name)]
-            rows.append(build_comparison_row(dataset_name, method_name, cell_record, paper_row))
+            paper_row = PAPER_TABLE_1.get((dataset_name, method_name))
+            if paper_row is None:
+                rows.append(build_comparison_row_without_paper_reference(dataset_name, method_name, cell_record))
+            else:
+                rows.append(build_comparison_row(dataset_name, method_name, cell_record, paper_row))
     return rows
 
 
