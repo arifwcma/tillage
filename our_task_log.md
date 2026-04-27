@@ -73,6 +73,8 @@ Every CSV row carries: reference columns (Org C, Country, Plotcode, BTOP, BBOT, 
 6. SG/SGD hyperparameter selection: same repeated-CV one-SE rule used for PLSR LVs.
 7. PLSR LV search range: 1 to 25.
 8. RPIQ denominator: IQR of *validation-set observed* SOC.
+9. Inner CV grouping key: same as outer split — `Batch and labid` — so scan-replicate rows of the same physical sample never split across CV folds.
+10. Per-cell predictions file format: 17 reference columns (country, lat/lon, depth, etc.) + `observed` + `predicted`. No spectra. Lets downstream analysis slice errors by any reference attribute without rebuilding the spectra matrix.
 
 ---
 

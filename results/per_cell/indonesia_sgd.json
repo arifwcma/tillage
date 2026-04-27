@@ -1,0 +1,61 @@
+{
+  "dataset": "indonesia",
+  "method": "sgd",
+  "winner": {
+    "lv_count": 6,
+    "preprocessing_specification": {
+      "label": "sgd",
+      "window": 25,
+      "polyorder": 2,
+      "deriv": 2
+    },
+    "cv_mean_rmse": 1.8991494396558217,
+    "cv_se_rmse": 0.18393351812229405,
+    "cv_minimum_mean_rmse": 1.73579397486993,
+    "cv_se_at_minimum": 0.1751166377139686,
+    "cv_one_se_threshold": 1.9109106125838986,
+    "n_candidates_within_one_se": 127
+  },
+  "train_metrics": {
+    "rmse": 1.9138173537318897,
+    "r2": 0.6664924700234025,
+    "mbd": -3.7794826370218094e-17,
+    "rpiq": 1.2344438174276098,
+    "n": 188
+  },
+  "test_metrics": {
+    "rmse": 0.9984945006685255,
+    "r2": 0.7570966416370851,
+    "mbd": 0.1837583129455438,
+    "rpiq": 2.436167648766578,
+    "n": 48
+  },
+  "runtime_seconds": 44.877076625823975,
+  "configuration": {
+    "cv_n_repeats": 5,
+    "cv_n_folds": 10,
+    "cv_base_random_seed": 42,
+    "plsr_lv_min": 1,
+    "plsr_lv_max": 25,
+    "sg_window_grid": [
+      7,
+      9,
+      11,
+      13,
+      15,
+      17,
+      19,
+      21,
+      23,
+      25,
+      27,
+      29,
+      31
+    ],
+    "sg_polyorder_grid": [
+      2,
+      3
+    ],
+    "sgd_derivative_order": 2
+  }
+}

@@ -1,0 +1,58 @@
+{
+  "dataset": "kenya",
+  "method": "msc",
+  "winner": {
+    "lv_count": 15,
+    "preprocessing_specification": {
+      "label": "msc"
+    },
+    "cv_mean_rmse": 0.7253176967600049,
+    "cv_se_rmse": 0.038872225702232505,
+    "cv_minimum_mean_rmse": 0.6950549955266214,
+    "cv_se_at_minimum": 0.03693991101559895,
+    "cv_one_se_threshold": 0.7319949065422203,
+    "n_candidates_within_one_se": 11
+  },
+  "train_metrics": {
+    "rmse": 0.5146169680366998,
+    "r2": 0.9472451374821087,
+    "mbd": -1.7763568394002506e-16,
+    "rpiq": 2.5358666368477265,
+    "n": 195
+  },
+  "test_metrics": {
+    "rmse": 0.7210913499656557,
+    "r2": 0.9030862224624181,
+    "mbd": -0.11378151555891047,
+    "rpiq": 1.7785541319571825,
+    "n": 50
+  },
+  "runtime_seconds": 2.4173171520233154,
+  "configuration": {
+    "cv_n_repeats": 5,
+    "cv_n_folds": 10,
+    "cv_base_random_seed": 42,
+    "plsr_lv_min": 1,
+    "plsr_lv_max": 25,
+    "sg_window_grid": [
+      7,
+      9,
+      11,
+      13,
+      15,
+      17,
+      19,
+      21,
+      23,
+      25,
+      27,
+      29,
+      31
+    ],
+    "sg_polyorder_grid": [
+      2,
+      3
+    ],
+    "sgd_derivative_order": 2
+  }
+}

@@ -1,0 +1,58 @@
+{
+  "dataset": "global",
+  "method": "snv",
+  "winner": {
+    "lv_count": 12,
+    "preprocessing_specification": {
+      "label": "snv"
+    },
+    "cv_mean_rmse": 1.6416268494483395,
+    "cv_se_rmse": 0.10279634607118938,
+    "cv_minimum_mean_rmse": 1.554567618906327,
+    "cv_se_at_minimum": 0.09434409651729887,
+    "cv_one_se_threshold": 1.648911715423626,
+    "n_candidates_within_one_se": 14
+  },
+  "train_metrics": {
+    "rmse": 1.6678834108099116,
+    "r2": 0.6409607631464784,
+    "mbd": 4.000553407470067e-17,
+    "rpiq": 0.5815754229061941,
+    "n": 3197
+  },
+  "test_metrics": {
+    "rmse": 1.6541066920389502,
+    "r2": 0.6239150726753433,
+    "mbd": 0.049691061479472755,
+    "rpiq": 0.5864192465144556,
+    "n": 800
+  },
+  "runtime_seconds": 35.382179975509644,
+  "configuration": {
+    "cv_n_repeats": 5,
+    "cv_n_folds": 10,
+    "cv_base_random_seed": 42,
+    "plsr_lv_min": 1,
+    "plsr_lv_max": 25,
+    "sg_window_grid": [
+      7,
+      9,
+      11,
+      13,
+      15,
+      17,
+      19,
+      21,
+      23,
+      25,
+      27,
+      29,
+      31
+    ],
+    "sg_polyorder_grid": [
+      2,
+      3
+    ],
+    "sgd_derivative_order": 2
+  }
+}

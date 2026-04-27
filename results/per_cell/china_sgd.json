@@ -1,0 +1,61 @@
+{
+  "dataset": "china",
+  "method": "sgd",
+  "winner": {
+    "lv_count": 22,
+    "preprocessing_specification": {
+      "label": "sgd",
+      "window": 19,
+      "polyorder": 2,
+      "deriv": 2
+    },
+    "cv_mean_rmse": 0.2613419188429733,
+    "cv_se_rmse": 0.00914836773802961,
+    "cv_minimum_mean_rmse": 0.25318637241280567,
+    "cv_se_at_minimum": 0.009003045952313202,
+    "cv_one_se_threshold": 0.2621894183651189,
+    "n_candidates_within_one_se": 44
+  },
+  "train_metrics": {
+    "rmse": 0.13501380646144945,
+    "r2": 0.9728854948407295,
+    "mbd": -2.1248287552634575e-17,
+    "rpiq": 4.518056456501532,
+    "n": 209
+  },
+  "test_metrics": {
+    "rmse": 0.1897099581785031,
+    "r2": 0.8948778836144521,
+    "mbd": 0.05841046667161966,
+    "rpiq": 2.7410263804429196,
+    "n": 53
+  },
+  "runtime_seconds": 48.54411768913269,
+  "configuration": {
+    "cv_n_repeats": 5,
+    "cv_n_folds": 10,
+    "cv_base_random_seed": 42,
+    "plsr_lv_min": 1,
+    "plsr_lv_max": 25,
+    "sg_window_grid": [
+      7,
+      9,
+      11,
+      13,
+      15,
+      17,
+      19,
+      21,
+      23,
+      25,
+      27,
+      29,
+      31
+    ],
+    "sg_polyorder_grid": [
+      2,
+      3
+    ],
+    "sgd_derivative_order": 2
+  }
+}
