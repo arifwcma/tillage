@@ -209,6 +209,16 @@ Sanity check (`verify_preprocessed.py`, run on `global_*_train.csv`):
 
 All 48 outputs produced no NaN / Inf (`np.isfinite(...).all()` asserted per file).
 
+#### Sample counts per region
+
+Preprocessing transforms feature columns only — row counts are identical across all six preprocessing methods, so a single per-region table covers the whole matrix. Per-region totals match Tong et al. Table 1 exactly. Train/test ratio is the 80/20 grouped+stratified split from Step 3.
+
+| split | global | china | kenya | indonesia |
+|---|---:|---:|---:|---:|
+| train | 3197 | 209 | 195 | 188 |
+| test  |  800 |  53 |  50 |  48 |
+| total | 3997 | 262 | 245 | 236 |
+
 ### Step 5 — PLSR modelling (`train_plsr.py` + `summarise_results.py`)
 
 For each of the 4 × 5 = 20 cells:

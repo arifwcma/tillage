@@ -17,3 +17,6 @@ class RbnSocAnn(nn.Module):
     def forward(self, raw_spectra):
         normalised_spectra = self.preprocessing_batchnorm(raw_spectra)
         return self.regression_head(normalised_spectra).squeeze(-1)
+
+    def count_learnable_parameters(self):
+        return sum(parameter.numel() for parameter in self.parameters() if parameter.requires_grad)

@@ -15,3 +15,6 @@ class BaselineSocAnn(nn.Module):
 
     def forward(self, input_spectra):
         return self.regression_head(input_spectra).squeeze(-1)
+
+    def count_learnable_parameters(self):
+        return sum(parameter.numel() for parameter in self.parameters() if parameter.requires_grad)

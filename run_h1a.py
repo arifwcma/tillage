@@ -4,8 +4,10 @@ import time
 import pandas as pd
 
 from train_pbn_experiment import (
+    BATCH_SIZE,
     DEVICE,
     SUPERVISED_EPOCHS,
+    WEIGHT_DECAY,
     load_one_preprocessed_pair,
     extract_spectra_and_target,
     reset_all_random_seeds,
@@ -40,7 +42,9 @@ def train_dl_method_and_get_metrics(dataset_name, model_class):
     n_features = train_spectra.shape[1]
 
     regressor_model = model_class(n_features).to(DEVICE)
-    train_supervised_regressor(regressor_model, train_spectra, train_target, SUPERVISED_EPOCHS)
+    train_supervised_regressor(
+        regressor_model, train_spectra, train_target, SUPERVISED_EPOCHS, BATCH_SIZE, WEIGHT_DECAY
+    )
 
     train_predictions = predict_for_set(regressor_model, train_spectra)
     test_predictions = predict_for_set(regressor_model, test_spectra)
