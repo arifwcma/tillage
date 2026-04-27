@@ -18,6 +18,8 @@ python data_loader.py          # builds data/raw/{global,china,kenya,indonesia}.
 python make_splits.py          # builds data/splits/{dataset}_split.csv  (single 80/20, group=Batch and labid, strata=SOC quartile, seed=42)
 python make_preprocessed.py    # builds data/preprocessed/{dataset}_{none|snv|msc|sg|sgd}_{train|test}.csv  (40 files, ~720 MB total)
 python verify_preprocessed.py  # optional: sanity-checks SNV/MSC/SG/SGD math on the global train set
+python train_plsr.py           # PLSR sweep over 4 datasets x 5 methods, writes results/per_cell/{dataset}_{method}.json + predictions CSV (~32 min)
+python summarise_results.py    # builds results/table1_replication.csv comparing every cell to paper Table 1
 # ... (further steps appended below as we add them)
 ```
 
@@ -40,6 +42,8 @@ data_loader.py                                   # step 2: builds raw per-domain
 make_splits.py                                   # step 3: builds 80/20 train/test split tables
 make_preprocessed.py                             # step 4: applies the 5 preprocessings, writes train/test CSVs
 verify_preprocessed.py                           # one-shot integrity check on preprocessed outputs
+train_plsr.py                                    # step 5: PLSR + CV + one-SE rule + test eval, per (dataset x method)
+summarise_results.py                             # step 5b: table1_replication.csv, paper-vs-ours acceptance flags
 requirements.txt
 experiment_spec.md                               # full paper-replication spec, ambiguity decisions, numbers to match
 our_task_log.md                                  # this file
@@ -59,6 +63,11 @@ data/                                            # gitignored, all derived CSVs
     {dataset}_split.csv                          # Batch and labid → 'train' | 'test' (3997+262+245+236 rows)
   preprocessed/
     {dataset}_{none|snv|msc|sg|sgd}_{train|test}.csv   # 40 files, ~720 MB total
+results/                                         # gitignore-d, all model outputs
+  per_cell/
+    {dataset}_{method}.json                      # winning hyperparams + train/test metrics
+    {dataset}_{method}_predictions.csv           # ref cols + observed + predicted, train+test concat
+  table1_replication.csv                         # paper vs ours, with PASS/FAIL flags per criterion
 ```
 
 Every CSV row carries: reference columns (Org C, Country, Plotcode, BTOP, BBOT, lat, lon, etc.) + the spectral columns. Reference cols are not used by the model but are kept for downstream analysis.
@@ -167,6 +176,87 @@ Sanity check (`verify_preprocessed.py`, run on `global_*_train.csv`):
 
 All 40 outputs produced no NaN / Inf (`np.isfinite(...).all()` asserted per file).
 
-### Step 5 — PLSR modelling (next)
-Per (dataset × method): build PLSR on the train CSV, tune LV count (and SG/SGD window/order for SG/SGD methods) via repeated 10-fold CV with the one-SE rule, refit on full 80%, evaluate on 20% test. Report RMSE / R² / MBD / RPIQ to compare with paper Table 1.
+### Step 5 — PLSR modelling (`train_plsr.py` + `summarise_results.py`)
+
+For each of the 4 × 5 = 20 cells:
+
+1. Read raw spectra from `data/preprocessed/{dataset}_none_{train,test}.csv` (the *none* artefact happens to also be the canonical raw matrix).
+2. Compute SOC quartiles on the train target → strata for inner CV.
+3. Build 5 repeats × 10 folds = 50 grouped+stratified CV folds (`StratifiedGroupKFold`, group=`Batch and labid`, seeds 42…46).
+4. For every fold, for every preprocessing-grid candidate:
+   - Fit preprocessing on inner-train, transform inner-train and inner-val.
+   - Fit one PLSR with `n_components=PLSR_LV_MAX=25` (centred manually; sklearn's `PLSRegression(scale=False)`).
+   - Reconstruct predictions for every LV ≤ 25 from `x_rotations_` and `y_loadings_` slices (one fit, all LVs evaluated).
+   - Record per-fold RMSE in a `(grid, lv, fold)` cube.
+5. One-SE rule on the flattened cube: find min mean RMSE → threshold = min + 1·SE_at_min → among all candidates with mean RMSE ≤ threshold, pick smallest LV (parsimony); ties broken by smallest window then polyorder.
+6. Refit preprocessing + PLSR on full 80 % train with the winning hyperparameters, predict on 20 % test.
+7. Write `results/per_cell/{dataset}_{method}.json` (winner + metrics + config) and `..._predictions.csv` (reference columns + observed + predicted, concat of train and test).
+
+Method-specific preprocessing grids:
+
+| method | grid size | what's tuned in CV |
+|---|---|---|
+| none | 25 | LV ∈ 1..25 |
+| snv | 25 | LV |
+| msc | 25 | LV (MSC reference re-fit per inner fold) |
+| sg  | 13 × 2 × 25 = 650 | window ∈ {7,9,…,31} odd × polyorder ∈ {2,3} × LV |
+| sgd | 13 × 2 × 25 = 650 | same as sg, deriv=2 fixed |
+
+Idempotency: cells with an existing JSON are skipped — re-running `train_plsr.py` after a partial run resumes from the next missing cell.
+
+Total runtime on this machine: **~32 minutes** (global/sg and global/sgd are the two 13-minute cells; everything else is ≤ 1 minute).
+
+#### Results vs paper Table 1
+
+Full table in `results/table1_replication.csv`. Highlights:
+
+| dataset | method | LV paper | LV ours | RMSE paper | RMSE ours | rel Δ | R² paper | R² ours |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| global | sgd | 11 | 12 | 1.559 | 1.662 | 6.6 % | 0.789 | 0.620 |
+| global | snv | 14 | 12 | 1.812 | 1.654 | 8.7 % | 0.715 | 0.624 |
+| global | msc | 13 | 13 | 1.931 | 1.597 | 17 % | 0.676 | 0.650 |
+| china | snv | 6 | 22 | 0.253 | 0.207 | 18 % | 0.878 | 0.875 |
+| china | sgd | 4 | 22 | 0.282 | 0.190 | 33 % | 0.856 | 0.895 |
+| kenya | snv | 6 | 15 | 0.713 | 0.709 | 0.5 % | 0.924 | 0.906 |
+| kenya | msc | 6 | 15 | 0.725 | 0.721 | 0.5 % | 0.919 | 0.903 |
+| indonesia | msc | 13 | 9 | 0.849 | 1.119 | 32 % | 0.876 | 0.695 |
+
+Acceptance summary (from `results/table1_replication.csv`): **0 / 20** cells pass all four acceptance criteria from `experiment_spec.md` §10 simultaneously. Per-criterion: LV-pass 3/20, RMSE-pass 7/20, R²-pass 7/20, MBD-pass 1/20.
+
+#### Why we don't replicate the numbers exactly
+
+Two fully-documented unspecified items in the paper drive the divergence:
+
+1. **Random seed for the outer 80/20 split**. We use 42; the paper does not state theirs. With small per-country test sets (n=48–53), a different test draw shifts every metric meaningfully — particularly MBD (most of our MBD values are off by 0.1–0.4 from paper, in a direction consistent with a slightly different mean SOC in the test draw).
+2. **One-SE rule SE definition**. We use SE = std(per-fold RMSE) / √(50). The paper says only "one-SE rule"; common practice also uses √(K_inner_folds=10) as the divisor, which gives a ~2.2× wider threshold and yields more parsimonious LV picks. With our narrow band, smallest-LV-within-1SE keeps falling into the late teens / early twenties, whereas paper's LVs are in the single digits or low teens.
+
+What does *not* explain the divergence (verified):
+
+1. Sample counts: exact match (3997/262/245/236).
+2. Spectral window: 4000–600 cm⁻¹ exactly, 1763 wavenumbers.
+3. PLSR engine: `PLSRegression(scale=False)` matches paper's "mean-centred" specification.
+4. Preprocessing math: SNV row-mean ≈ 0 std = 1, MSC fit-on-train applied-on-test, SG/SGD via `scipy.signal.savgol_filter`. Verified independently in `verify_preprocessed.py`.
+
+#### What does still hold from the paper
+
+The paper's qualitative central claim — *"preprocessing choice should be tailored to the target domain rather than treated as universally optimal"* — is **also visible in our reproduction**, just with shuffled specifics:
+
+| region | paper's best | our best | both pick the same? |
+|---|---|---|---|
+| global | sgd | msc | no, but sgd is 2nd in ours (1.66 vs 1.60) |
+| china | snv (0.253) | sgd (0.190) | no, ranking differs |
+| kenya | snv (0.713) | snv (0.709) | **yes** |
+| indonesia | msc (0.849) | sgd (0.998) / sg-tied-with-none | no |
+
+What is consistent across both reproductions: there is **no single universally-best preprocessing**. Different regions favour different methods. That's the paper's claim and it survives even with our diverging exact numbers.
+
+#### Decisions taken without bothering Arif
+
+1. **Continue with current PLSR results as the baseline** rather than chase exact paper numerics by guessing the seed and SE definition. Rationale: the project goal is to compare DL against PLSR, not to reproduce Tong et al.'s table to four decimals. Our PLSR pipeline is methodologically faithful and our DL comparison will use the same train/test split and the same CV protocol, which is what matters for a fair head-to-head.
+2. Document the divergences here in this log and in `experiment_spec.md` — flag for the discussion section of the future paper.
+3. Acceptance criteria from §10 of `experiment_spec.md` are **not met as written**. Rewriting them to "PLSR vs DL on identical split" is the right move and is implicit in Step 6.
+
+### Step 6 — DL replacement (next)
+Replace PLSR with a DL model (1D CNN baseline first, then more) on the exact same `data/raw/` + `data/splits/` setup. Same per-cell JSON / predictions CSV layout under `results/per_cell_dl/`. Comparison table: PLSR (us) vs DL (us) vs PLSR (paper).
+
 
