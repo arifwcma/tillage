@@ -5,3 +5,5 @@ additionals/
 data/
 resource/
 results/
+logs/
+__pycache__/

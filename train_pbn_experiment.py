@@ -7,12 +7,9 @@ import pandas as pd
 import torch
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
-from sklearn.cross_decomposition import PLSRegression
 
 from model_baseline_ann import BaselineSocAnn
-from model_pbn_ann import LearnedPreprocessingAutoencoder, PbnSocAnn
 from model_rbn_ann import RbnSocAnn
-from model_p2bn_ann import P2bnSocAnn
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -23,7 +20,7 @@ PREDICTIONS_DIR = RESULTS_DIR / "predictions"
 
 DATASET_NAMES = ["global", "china", "kenya", "indonesia"]
 PREPROCESSING_NAMES = ["none", "snv", "msc", "sg", "sgd", "minmax"]
-METHOD_NAMES = ["baseline", "pbn", "plsr_pbn", "rbn", "r2bn", "p2bn"]
+METHOD_NAMES = ["baseline", "rbn"]
 
 SOC_COLUMN = "Org C"
 WAVENUMBER_COLUMN_PATTERN = re.compile(r"^m\d+(?:\.\d+)?$")
@@ -34,13 +31,6 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 BATCH_SIZE = 64
 LEARNING_RATE = 1e-3
 SUPERVISED_EPOCHS = 200
-AUTOENCODER_PRETRAIN_EPOCHS = 100
-DOUBLE_SUPERVISED_EPOCHS = 400
-PLSR_PBN_LV_COUNT = 15
-P2BN_SOC_LOSS_WEIGHT = 0.8
-P2BN_RECONSTRUCTION_LOSS_WEIGHT = 0.2
-P2BN_SUPERVISED_EPOCHS = 100
-P2BN_LOSS_SCALE_EMA_MOMENTUM = 0.9
 
 
 def load_one_preprocessed_pair(dataset_name, preprocessing_name):
@@ -77,29 +67,9 @@ def reset_all_random_seeds():
         torch.cuda.manual_seed_all(RANDOM_SEED)
 
 
-def build_loader_features_only(spectra_matrix, shuffle):
-    dataset = TensorDataset(to_device_tensor(spectra_matrix))
-    return DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=shuffle)
-
-
 def build_loader_features_and_targets(spectra_matrix, target_vector, shuffle):
     dataset = TensorDataset(to_device_tensor(spectra_matrix), to_device_tensor(target_vector))
     return DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=shuffle)
-
-
-def pretrain_autoencoder(autoencoder_model, train_spectra):
-    autoencoder_model.train()
-    optimizer = torch.optim.Adam(autoencoder_model.parameters(), lr=LEARNING_RATE)
-    reconstruction_loss = nn.MSELoss()
-    train_loader = build_loader_features_only(train_spectra, shuffle=True)
-
-    for epoch_index in range(AUTOENCODER_PRETRAIN_EPOCHS):
-        for (batch_spectra,) in train_loader:
-            optimizer.zero_grad()
-            reconstructed_spectra = autoencoder_model(batch_spectra)
-            loss = reconstruction_loss(reconstructed_spectra, batch_spectra)
-            loss.backward()
-            optimizer.step()
 
 
 def train_supervised_regressor(regressor_model, train_spectra, train_target, n_epochs):
@@ -115,63 +85,6 @@ def train_supervised_regressor(regressor_model, train_spectra, train_target, n_e
             loss = soc_loss(predicted_soc, batch_target)
             loss.backward()
             optimizer.step()
-
-
-def train_p2bn_jointly(p2bn_model, train_spectra, train_target):
-    p2bn_model.train()
-    optimizer = torch.optim.Adam(p2bn_model.parameters(), lr=LEARNING_RATE)
-    soc_loss_fn = nn.MSELoss()
-    reconstruction_loss_fn = nn.MSELoss()
-    train_loader = build_loader_features_and_targets(train_spectra, train_target, shuffle=True)
-
-    soc_loss_running_scale = None
-    reconstruction_loss_running_scale = None
-
-    for epoch_index in range(P2BN_SUPERVISED_EPOCHS):
-        for batch_spectra, batch_target in train_loader:
-            optimizer.zero_grad()
-            soc_prediction, reconstructed_spectra = p2bn_model(batch_spectra)
-            soc_loss_value = soc_loss_fn(soc_prediction, batch_target)
-            reconstruction_loss_value = reconstruction_loss_fn(reconstructed_spectra, batch_spectra)
-
-            soc_loss_scalar = float(soc_loss_value.detach().item())
-            reconstruction_loss_scalar = float(reconstruction_loss_value.detach().item())
-            if soc_loss_running_scale is None:
-                soc_loss_running_scale = soc_loss_scalar
-                reconstruction_loss_running_scale = reconstruction_loss_scalar
-            else:
-                soc_loss_running_scale = (
-                    P2BN_LOSS_SCALE_EMA_MOMENTUM * soc_loss_running_scale
-                    + (1.0 - P2BN_LOSS_SCALE_EMA_MOMENTUM) * soc_loss_scalar
-                )
-                reconstruction_loss_running_scale = (
-                    P2BN_LOSS_SCALE_EMA_MOMENTUM * reconstruction_loss_running_scale
-                    + (1.0 - P2BN_LOSS_SCALE_EMA_MOMENTUM) * reconstruction_loss_scalar
-                )
-
-            soc_loss_normalised = soc_loss_value / max(soc_loss_running_scale, 1e-8)
-            reconstruction_loss_normalised = reconstruction_loss_value / max(reconstruction_loss_running_scale, 1e-8)
-
-            combined_loss = (
-                P2BN_SOC_LOSS_WEIGHT * soc_loss_normalised
-                + P2BN_RECONSTRUCTION_LOSS_WEIGHT * reconstruction_loss_normalised
-            )
-            combined_loss.backward()
-            optimizer.step()
-
-
-def predict_soc_for_p2bn(p2bn_model, spectra_matrix):
-    p2bn_model.eval()
-    with torch.no_grad():
-        soc_prediction, _ = p2bn_model(to_device_tensor(spectra_matrix))
-    return soc_prediction.cpu().numpy()
-
-
-def transform_spectra_through_frozen_batchnorm(autoencoder_model, spectra_matrix):
-    autoencoder_model.eval()
-    with torch.no_grad():
-        normalised = autoencoder_model.preprocessing_batchnorm(to_device_tensor(spectra_matrix))
-    return normalised.cpu().numpy()
 
 
 def predict_for_set(regressor_model, spectra_matrix):
@@ -232,42 +145,11 @@ def build_configuration_block_for_method(method_name):
             "random_seed": RANDOM_SEED, "batch_size": BATCH_SIZE, "learning_rate": LEARNING_RATE,
             "supervised_epochs": SUPERVISED_EPOCHS, "uses_batchnorm": False, "batchnorm_pretrained": False,
         }
-    if method_name == "pbn":
-        return {
-            "random_seed": RANDOM_SEED, "batch_size": BATCH_SIZE, "learning_rate": LEARNING_RATE,
-            "supervised_epochs": SUPERVISED_EPOCHS, "autoencoder_pretrain_epochs": AUTOENCODER_PRETRAIN_EPOCHS,
-            "uses_batchnorm": True, "batchnorm_pretrained": True, "batchnorm_jointly_finetuned_with_head": True,
-        }
-    if method_name == "plsr_pbn":
-        return {
-            "random_seed": RANDOM_SEED, "batch_size": BATCH_SIZE, "learning_rate": LEARNING_RATE,
-            "autoencoder_pretrain_epochs": AUTOENCODER_PRETRAIN_EPOCHS,
-            "plsr_lv_count": PLSR_PBN_LV_COUNT,
-            "uses_batchnorm": True, "batchnorm_pretrained": True, "batchnorm_jointly_finetuned_with_head": False,
-            "downstream_regressor": "PLSRegression",
-        }
     if method_name == "rbn":
         return {
             "random_seed": RANDOM_SEED, "batch_size": BATCH_SIZE, "learning_rate": LEARNING_RATE,
             "supervised_epochs": SUPERVISED_EPOCHS,
             "uses_batchnorm": True, "batchnorm_pretrained": False, "batchnorm_jointly_finetuned_with_head": True,
-        }
-    if method_name == "r2bn":
-        return {
-            "random_seed": RANDOM_SEED, "batch_size": BATCH_SIZE, "learning_rate": LEARNING_RATE,
-            "supervised_epochs": DOUBLE_SUPERVISED_EPOCHS,
-            "uses_batchnorm": True, "batchnorm_pretrained": False, "batchnorm_jointly_finetuned_with_head": True,
-        }
-    if method_name == "p2bn":
-        return {
-            "random_seed": RANDOM_SEED, "batch_size": BATCH_SIZE, "learning_rate": LEARNING_RATE,
-            "supervised_epochs": P2BN_SUPERVISED_EPOCHS,
-            "uses_batchnorm": True, "batchnorm_pretrained": False, "batchnorm_jointly_finetuned_with_head": True,
-            "joint_autoencoder_branch": True,
-            "soc_loss_weight": P2BN_SOC_LOSS_WEIGHT,
-            "reconstruction_loss_weight": P2BN_RECONSTRUCTION_LOSS_WEIGHT,
-            "loss_normalisation": "ema_per_loss",
-            "loss_scale_ema_momentum": P2BN_LOSS_SCALE_EMA_MOMENTUM,
         }
     raise ValueError(f"unknown method: {method_name}")
 
@@ -339,84 +221,6 @@ def run_one_baseline_cell(dataset_name, preprocessing_name):
     )
 
 
-def run_one_pbn_cell(dataset_name, preprocessing_name):
-    cell_json_path, _ = cell_output_paths(dataset_name, preprocessing_name, "pbn")
-    if cell_json_path.exists():
-        print(f"  [skip] {dataset_name} / {preprocessing_name} / pbn")
-        return
-
-    cell_start_seconds = time.time()
-    reset_all_random_seeds()
-
-    train_dataframe, test_dataframe = load_one_preprocessed_pair(dataset_name, preprocessing_name)
-    train_spectra, train_target = extract_spectra_and_target(train_dataframe)
-    test_spectra, test_target = extract_spectra_and_target(test_dataframe)
-    n_features = train_spectra.shape[1]
-
-    autoencoder_model = LearnedPreprocessingAutoencoder(n_features).to(DEVICE)
-    pretrain_autoencoder(autoencoder_model, train_spectra)
-
-    regressor_model = PbnSocAnn(autoencoder_model, n_features).to(DEVICE)
-    train_supervised_regressor(regressor_model, train_spectra, train_target, SUPERVISED_EPOCHS)
-
-    train_predictions = predict_for_set(regressor_model, train_spectra)
-    test_predictions = predict_for_set(regressor_model, test_spectra)
-    train_metrics = compute_metrics_dictionary(train_target, train_predictions)
-    test_metrics = compute_metrics_dictionary(test_target, test_predictions)
-
-    runtime_seconds = time.time() - cell_start_seconds
-    save_cell_result(dataset_name, preprocessing_name, "pbn", train_metrics, test_metrics, runtime_seconds)
-    save_cell_predictions(
-        dataset_name, preprocessing_name, "pbn",
-        train_dataframe, train_predictions, test_dataframe, test_predictions,
-    )
-    print(
-        f"  pbn     : train RMSE={train_metrics['rmse']:.4f}  "
-        f"test RMSE={test_metrics['rmse']:.4f}  R2={test_metrics['r2']:.4f}  "
-        f"({runtime_seconds:.1f} s)"
-    )
-
-
-def run_one_plsr_pbn_cell(dataset_name, preprocessing_name):
-    cell_json_path, _ = cell_output_paths(dataset_name, preprocessing_name, "plsr_pbn")
-    if cell_json_path.exists():
-        print(f"  [skip] {dataset_name} / {preprocessing_name} / plsr_pbn")
-        return
-
-    cell_start_seconds = time.time()
-    reset_all_random_seeds()
-
-    train_dataframe, test_dataframe = load_one_preprocessed_pair(dataset_name, preprocessing_name)
-    train_spectra, train_target = extract_spectra_and_target(train_dataframe)
-    test_spectra, test_target = extract_spectra_and_target(test_dataframe)
-    n_features = train_spectra.shape[1]
-
-    autoencoder_model = LearnedPreprocessingAutoencoder(n_features).to(DEVICE)
-    pretrain_autoencoder(autoencoder_model, train_spectra)
-
-    train_normalised = transform_spectra_through_frozen_batchnorm(autoencoder_model, train_spectra)
-    test_normalised = transform_spectra_through_frozen_batchnorm(autoencoder_model, test_spectra)
-
-    plsr_model = PLSRegression(n_components=PLSR_PBN_LV_COUNT, scale=False)
-    plsr_model.fit(train_normalised, train_target)
-    train_predictions = plsr_model.predict(train_normalised).ravel()
-    test_predictions = plsr_model.predict(test_normalised).ravel()
-    train_metrics = compute_metrics_dictionary(train_target, train_predictions)
-    test_metrics = compute_metrics_dictionary(test_target, test_predictions)
-
-    runtime_seconds = time.time() - cell_start_seconds
-    save_cell_result(dataset_name, preprocessing_name, "plsr_pbn", train_metrics, test_metrics, runtime_seconds)
-    save_cell_predictions(
-        dataset_name, preprocessing_name, "plsr_pbn",
-        train_dataframe, train_predictions, test_dataframe, test_predictions,
-    )
-    print(
-        f"  plsr_pbn: train RMSE={train_metrics['rmse']:.4f}  "
-        f"test RMSE={test_metrics['rmse']:.4f}  R2={test_metrics['r2']:.4f}  "
-        f"({runtime_seconds:.1f} s)"
-    )
-
-
 def run_one_rbn_cell(dataset_name, preprocessing_name):
     cell_json_path, _ = cell_output_paths(dataset_name, preprocessing_name, "rbn")
     if cell_json_path.exists():
@@ -447,76 +251,6 @@ def run_one_rbn_cell(dataset_name, preprocessing_name):
     )
     print(
         f"  rbn     : train RMSE={train_metrics['rmse']:.4f}  "
-        f"test RMSE={test_metrics['rmse']:.4f}  R2={test_metrics['r2']:.4f}  "
-        f"({runtime_seconds:.1f} s)"
-    )
-
-
-def run_one_p2bn_cell(dataset_name, preprocessing_name):
-    cell_json_path, _ = cell_output_paths(dataset_name, preprocessing_name, "p2bn")
-    if cell_json_path.exists():
-        print(f"  [skip] {dataset_name} / {preprocessing_name} / p2bn")
-        return
-
-    cell_start_seconds = time.time()
-    reset_all_random_seeds()
-
-    train_dataframe, test_dataframe = load_one_preprocessed_pair(dataset_name, preprocessing_name)
-    train_spectra, train_target = extract_spectra_and_target(train_dataframe)
-    test_spectra, test_target = extract_spectra_and_target(test_dataframe)
-    n_features = train_spectra.shape[1]
-
-    p2bn_model = P2bnSocAnn(n_features).to(DEVICE)
-    train_p2bn_jointly(p2bn_model, train_spectra, train_target)
-
-    train_predictions = predict_soc_for_p2bn(p2bn_model, train_spectra)
-    test_predictions = predict_soc_for_p2bn(p2bn_model, test_spectra)
-    train_metrics = compute_metrics_dictionary(train_target, train_predictions)
-    test_metrics = compute_metrics_dictionary(test_target, test_predictions)
-
-    runtime_seconds = time.time() - cell_start_seconds
-    save_cell_result(dataset_name, preprocessing_name, "p2bn", train_metrics, test_metrics, runtime_seconds)
-    save_cell_predictions(
-        dataset_name, preprocessing_name, "p2bn",
-        train_dataframe, train_predictions, test_dataframe, test_predictions,
-    )
-    print(
-        f"  p2bn    : train RMSE={train_metrics['rmse']:.4f}  "
-        f"test RMSE={test_metrics['rmse']:.4f}  R2={test_metrics['r2']:.4f}  "
-        f"({runtime_seconds:.1f} s)"
-    )
-
-
-def run_one_r2bn_cell(dataset_name, preprocessing_name):
-    cell_json_path, _ = cell_output_paths(dataset_name, preprocessing_name, "r2bn")
-    if cell_json_path.exists():
-        print(f"  [skip] {dataset_name} / {preprocessing_name} / r2bn")
-        return
-
-    cell_start_seconds = time.time()
-    reset_all_random_seeds()
-
-    train_dataframe, test_dataframe = load_one_preprocessed_pair(dataset_name, preprocessing_name)
-    train_spectra, train_target = extract_spectra_and_target(train_dataframe)
-    test_spectra, test_target = extract_spectra_and_target(test_dataframe)
-    n_features = train_spectra.shape[1]
-
-    regressor_model = RbnSocAnn(n_features).to(DEVICE)
-    train_supervised_regressor(regressor_model, train_spectra, train_target, DOUBLE_SUPERVISED_EPOCHS)
-
-    train_predictions = predict_for_set(regressor_model, train_spectra)
-    test_predictions = predict_for_set(regressor_model, test_spectra)
-    train_metrics = compute_metrics_dictionary(train_target, train_predictions)
-    test_metrics = compute_metrics_dictionary(test_target, test_predictions)
-
-    runtime_seconds = time.time() - cell_start_seconds
-    save_cell_result(dataset_name, preprocessing_name, "r2bn", train_metrics, test_metrics, runtime_seconds)
-    save_cell_predictions(
-        dataset_name, preprocessing_name, "r2bn",
-        train_dataframe, train_predictions, test_dataframe, test_predictions,
-    )
-    print(
-        f"  r2bn    : train RMSE={train_metrics['rmse']:.4f}  "
         f"test RMSE={test_metrics['rmse']:.4f}  R2={test_metrics['r2']:.4f}  "
         f"({runtime_seconds:.1f} s)"
     )
@@ -565,11 +299,7 @@ def main():
         for preprocessing_name in PREPROCESSING_NAMES:
             print(f"\n>>> {dataset_name} / {preprocessing_name}")
             run_one_baseline_cell(dataset_name, preprocessing_name)
-            run_one_pbn_cell(dataset_name, preprocessing_name)
-            run_one_plsr_pbn_cell(dataset_name, preprocessing_name)
             run_one_rbn_cell(dataset_name, preprocessing_name)
-            run_one_r2bn_cell(dataset_name, preprocessing_name)
-            run_one_p2bn_cell(dataset_name, preprocessing_name)
 
     aggregate_all_cells_into_summary_csv()
     overall_elapsed_seconds = time.time() - overall_start_seconds

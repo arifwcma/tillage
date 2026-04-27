@@ -24,27 +24,15 @@ PREPROCESSING_DISPLAY_NAMES = {
 
 METHOD_DISPLAY_NAMES = {
     "baseline": "baseline",
-    "pbn": "pbn",
-    "plsr_pbn": "plsr_pbn",
     "rbn": "rbn",
-    "r2bn": "r2bn",
-    "p2bn": "p2bn",
 }
 
 DATASET_ORDER = ["global", "china", "kenya", "indonesia"]
 PREPROCESSING_ORDER = ["none", "snv", "msc", "sg", "sgd", "minmax"]
-METHOD_ORDER = ["baseline", "pbn", "plsr_pbn", "rbn", "r2bn", "p2bn"]
+METHOD_ORDER = ["baseline", "rbn"]
 
-PBN_VS_BASELINE_PAIRS = [
-    ("pbn", "baseline"),
-    ("pbn", "rbn"),
-    ("pbn", "r2bn"),
-    ("plsr_pbn", "baseline"),
-    ("plsr_pbn", "pbn"),
+HEAD_TO_HEAD_PAIRS = [
     ("rbn", "baseline"),
-    ("p2bn", "baseline"),
-    ("p2bn", "pbn"),
-    ("p2bn", "rbn"),
 ]
 
 
@@ -96,7 +84,7 @@ def format_one_preprocessing_block(summary_dataframe, dataset_name, preprocessin
         else:
             lines.append(format_one_method_line(METHOD_DISPLAY_NAMES[method_name], metrics_row))
 
-    for left_method, right_method in PBN_VS_BASELINE_PAIRS:
+    for left_method, right_method in HEAD_TO_HEAD_PAIRS:
         left_metrics = method_to_metrics.get(left_method)
         right_metrics = method_to_metrics.get(right_method)
         if left_metrics is None or right_metrics is None:
@@ -144,7 +132,7 @@ def format_overall_summary_block(summary_dataframe):
     lines.append("\n=========================================================")
     lines.append("Summary: head-to-head wins on test RMSE (lower is better)")
     lines.append("=========================================================")
-    for left_method, right_method in PBN_VS_BASELINE_PAIRS:
+    for left_method, right_method in HEAD_TO_HEAD_PAIRS:
         lines.append(f"\n  {left_method} vs {right_method}:")
         total_left_wins = 0
         total_compared = 0

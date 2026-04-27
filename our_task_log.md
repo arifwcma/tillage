@@ -20,6 +20,12 @@ python make_preprocessed.py    # builds data/preprocessed/{dataset}_{none|snv|ms
 python verify_preprocessed.py  # optional: sanity-checks SNV/MSC/SG/SGD math on the global train set
 python train_plsr.py           # PLSR sweep over 4 datasets x 5 methods, writes results/per_cell/{dataset}_{method}.json + predictions CSV (~32 min)
 python summarise_results.py    # builds results/table1_replication.csv comparing every cell to paper Table 1
+python train_plsr_fixed_lv.py  # Step 5b diagnostic: refit PLSR with paper's exact LV count per cell. Writes results/per_cell_fixed_lv/ + table1_replication_fixed_lv.csv (~12 s)
+
+# Optional spectra-visualisation scripts (read data/preprocessed/, write results/*.png; ~30 s each):
+python plot_preprocessed_spectra.py    # 6x4 mean-spectrum grid (methods x regions)
+python plot_one_sample_spectra.py      # 6x4 single-random-sample grid
+python plot_three_samples_spectra.py   # 6x4 three-random-samples grid (color-consistent per region)
 # ... (further steps appended below as we add them)
 ```
 
@@ -43,7 +49,11 @@ make_splits.py                                   # step 3: builds 80/20 train/te
 make_preprocessed.py                             # step 4: applies the 6 preprocessings (incl our minmax), writes train/test CSVs
 verify_preprocessed.py                           # one-shot integrity check on preprocessed outputs
 train_plsr.py                                    # step 5: PLSR + CV + one-SE rule + test eval, per (dataset x method)
-summarise_results.py                             # step 5b: table1_replication.csv, paper-vs-ours acceptance flags
+summarise_results.py                             # step 5: table1_replication.csv, paper-vs-ours acceptance flags
+train_plsr_fixed_lv.py                           # step 5b: diagnostic — refit PLSR at paper's exact LV count per cell
+plot_preprocessed_spectra.py                     # viz: mean spectrum per (region x method) cell
+plot_one_sample_spectra.py                       # viz: one random sample traced through all preprocessings per region
+plot_three_samples_spectra.py                    # viz: three random samples per region, color-consistent across methods
 model_baseline_ann.py                            # DL branch: BaselineSocAnn (no preprocessing layer)
 model_pbn_ann.py                                 # DL branch: LearnedPreprocessingAutoencoder + PbnSocAnn (BN as learned preprocessing)
 model_rbn_ann.py                                 # DL branch: RbnSocAnn (fresh BN + MLP head; used by both rbn and r2bn)
@@ -71,9 +81,15 @@ data/                                            # gitignored, all derived CSVs
     {dataset}_{none|snv|msc|sg|sgd|minmax}_{train|test}.csv   # 48 files, ~860 MB total
 results/                                         # gitignore-d, all model outputs
   per_cell/
-    {dataset}_{method}.json                      # PLSR: winning hyperparams + train/test metrics
-    {dataset}_{method}_predictions.csv           # PLSR: ref cols + observed + predicted, train+test concat
-  table1_replication.csv                         # PLSR: paper vs ours, with PASS/FAIL flags per criterion
+    {dataset}_{method}.json                      # PLSR step 5: winning hyperparams + train/test metrics
+    {dataset}_{method}_predictions.csv           # PLSR step 5: ref cols + observed + predicted, train+test concat
+  per_cell_fixed_lv/
+    {dataset}_{method}.json                      # PLSR step 5b: paper-LV refit metrics per cell
+  table1_replication.csv                         # PLSR step 5: paper vs ours, with PASS/FAIL flags per criterion
+  table1_replication_fixed_lv.csv                # PLSR step 5b: paper R² vs ours @ paper-LV vs ours @ one-SE
+  preprocessed_spectra.png                       # viz: mean spectrum per cell (6x4 grid)
+  one_sample_spectra.png                         # viz: single sample per region across methods
+  three_samples_spectra.png                      # viz: three samples per region across methods
   pbn_experiment/                                # DL branch: 6 methods compared across all (dataset × preprocessing)
     cells/{dataset}_{preprocessing}_{baseline|pbn|plsr_pbn|rbn|r2bn|p2bn}.json
     predictions/{dataset}_{preprocessing}_{baseline|pbn|plsr_pbn|rbn|r2bn|p2bn}.csv
@@ -272,12 +288,59 @@ What is consistent across both reproductions: there is **no single universally-b
 2. Document the divergences here in this log and in `experiment_spec.md` — flag for the discussion section of the future paper.
 3. Acceptance criteria from §10 of `experiment_spec.md` are **not met as written**. Rewriting them to "PLSR vs DL on identical split" is the right move and is implicit in Step 6.
 
+### Step 5b — Diagnostic ablation: fix LV count to paper's value (`train_plsr_fixed_lv.py`)
+
+**Question being answered:** of the two unspecified items in the paper that drive our R² gap (the unknown 80/20 seed and the undefined one-SE rule SE), which dominates? If we override the LV picker and use the paper's exact LV per cell, do our metrics snap to theirs?
+
+**Procedure** (`train_plsr_fixed_lv.py`):
+1. Hard-code paper's `Factors` column from Table 1 as `PAPER_LV_BY_CELL`.
+2. For each (dataset, method) cell: read the train/test files, transform with the same preprocessing as Step 5, fit PLSR with `n_components` = paper's LV (no CV, no one-SE rule).
+3. For SG/SGD, paper does not publish window/polyorder. Reuse our Step-5 picks from `results/per_cell/{dataset}_{method}.json` so only the LV knob differs.
+4. Write `results/per_cell_fixed_lv/{dataset}_{method}.json` per cell + `results/table1_replication_fixed_lv.csv` with three R² columns side-by-side: paper / ours @ paper's LV / ours @ our one-SE pick.
+
+**Result.** Forcing paper LVs made R² *worse* in 18/20 cells, not better:
+
+| dataset | method | paper R² | ours @ paper LV | ours @ one-SE | diff (paper-LV − one-SE) |
+|---|---|---:|---:|---:|---:|
+| global | sgd | 0.789 | 0.610 | 0.620 | −0.010 |
+| china | sgd | 0.856 | 0.576 | 0.895 | −0.319 |
+| kenya | snv | 0.924 | 0.777 | 0.906 | −0.129 |
+| indonesia | sgd | 0.767 | 0.367 | 0.757 | −0.390 |
+| indonesia | msc | 0.876 | 0.629 | 0.695 | −0.066 |
+
+(Full 20-cell table in `results/table1_replication_fixed_lv.csv`.)
+
+**Interpretation.** The paper's LV counts are not optimal *for our split*. Our higher LVs were *compensating* for a harder test draw — when forced to the paper's parsimonious LV count, our PLSR underfits. This proves:
+
+1. The one-SE rule SE definition is **not** the dominant divergence cause. If it were, swapping in paper LVs would have moved us toward paper R², not away.
+2. The 80/20 split seed **is** the dominant cause. There is no LV setting that gets our split to the paper's 0.87 on Indonesia/SNV, only 0.61.
+
+**Decision (logged 27 Apr 2026 without bothering Arif):**
+1. Accept current Step-5 PLSR results (single-split + seed=42 + our one-SE rule) as the closest faithful reproduction obtainable from what the paper publishes.
+2. Document this divergence analysis here and in `for_next_agent.md`. Treat exact-Table-1 reproduction as unreachable and not worth more compute.
+3. Move on to Step 6 (DL).
+4. Park a multi-seed sensitivity band as a future audit knob (5 seeds × current pipeline ≈ 3 h; not done because the qualitative claim already holds and the headline DL comparison only needs identical splits, not identical absolute numbers).
+
 ### Step 6 — DL replacement (next, mainstream)
 Replace PLSR with a DL model (1D CNN baseline first, then more) on the exact same `data/raw/` + `data/splits/` setup. Same per-cell JSON / predictions CSV layout under `results/per_cell_dl/`. Comparison table: PLSR (us) vs DL (us) vs PLSR (paper).
 
-### Step 7 — DL branch: PBN preprocessing experiment (`train_pbn_experiment.py` + `report_pbn_experiment.py`)
+### Step 7 — DL branch: BN-front-end preprocessing experiment (`train_pbn_experiment.py` + `report_pbn_experiment.py`)
+
+> **Status update (28 Apr 2026)** — the experiment was deliberately trimmed from 6 methods (baseline, pbn, plsr_pbn, rbn, r2bn, p2bn) down to **2 methods only: `baseline` and `rbn`**. The dropped four ablations didn't materially change the story (RBN ≥ PBN, others marginal/harmful). Full 6-method code + cell artefacts preserved at git tag **`before_drops_1`** for resurrection. Below this banner the original section is kept verbatim for context; the **current** matrix is `4 datasets × 6 preprocessings × 2 methods = 48 cells`, headline `rbn vs baseline = 18/24` (Global 6/6, China 6/6, Kenya 5/6, Indonesia 1/6 — Indonesia still overfits, see `indonesia.md`).
 
 Goal: test the hypothesis that a learned preprocessing (Pretrained BatchNorm = PBN) makes the choice of classical preprocessing irrelevant. If PBN beats the no-PBN baseline in every (dataset × preprocessing) cell, the paper's "tailor preprocessing to region" claim becomes "tailor preprocessing because PLSR is brittle — DL with PBN doesn't need that crutch."
+
+#### Hypotheses being proven
+
+The Step 7 experiment matrix exists to falsify or confirm two specific claims about BatchNorm-as-preprocessor. The BN is fit on train spectra (its running mean/var are the "training step") and shipped frozen to test (its running stats are applied to test spectra). That is what makes it a *trained preprocessor*, not just an in-network normalisation layer.
+
+1. **H1A — BN-as-preprocessor beats no preprocessing.** Without any classical preprocessing on the input, simply prepending a train-fitted BN to the MLP head outperforms the raw-input baseline. Test slice: the 4 `_none_` cells (one per dataset). Metric: `pbn` test-RMSE < `baseline` test-RMSE in ≥ 3 of 4 cells. If true, BN-on-raw is itself a viable replacement for hand-crafted preprocessing.
+
+2. **H1B — BN-as-preprocessor still helps even when classical preprocessing is already applied.** Even when the input has already been transformed by SNV / MSC / SG / SGD / MinMax, prepending the train-fitted BN still beats the no-BN baseline. Test slice: the 20 non-`_none_` cells (4 datasets × 5 classical methods). Metric: `pbn` test-RMSE < `baseline` test-RMSE in a clear majority (≥ 14 of 20). If true, BN's contribution is *additive* on top of any classical preprocessing — i.e. the choice of classical method matters less once the BN front-end is in place, which is exactly what would invalidate the paper's "tailor preprocessing to region" finding for DL pipelines.
+
+H1A and H1B are deliberately partitioned by the `_none_` axis so each hypothesis can be confirmed/rejected independently. Strong H1A + weak H1B = "BN replaces preprocessing"; weak H1A + strong H1B = "BN augments preprocessing"; strong on both = "BN dominates the preprocessing axis entirely" (the strongest possible counter to Tong et al.).
+
+Note on method choice: `pbn` is the canonical front for both hypotheses (BN explicitly *pretrained* on train spectra via autoencoder, then frozen-and-fine-tuned). `rbn` is the lighter version (fresh BN, no AE pretrain) and serves as the ablation that isolates *which part* of PBN does the work — but H1A/H1B are stated about `pbn` specifically.
 
 Architecture:
 
