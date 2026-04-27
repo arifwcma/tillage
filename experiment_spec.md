@@ -6,6 +6,23 @@ This document captures every experimental detail needed to reproduce the paper's
 
 ---
 
+## Sample-count reconciliation (resolved)
+
+Initial confusion (27 Apr 2026): we thought the public dataset was 135 samples short of the paper. After auditing duplicate structure, that was wrong — the paper's counts are reproducible exactly from the public data. The paper's two sets of country counts are simply different denominators of the same data:
+
+1. **Paper §2.1 prose** (China 245, Kenya 239, Indonesia 226) = unique-physical-sample counts derived from the reference table after deduplicating on `Batch and labid`.
+2. **Paper Table 1 + Supplementary S1** (China 262, Kenya 245, Indonesia 236, Global 3997) = row counts after joining the de-duplicated reference table to the spectra table — a sample with two distinct spectra (re-scans) contributes two rows; a sample with two reference rows differing only in coordinates also contributes two rows.
+
+The data loader (`data_loader.py`) keeps **all** duplicate rows so the final n matches Table 1 / supplementary exactly: **Global 3997, China 262, Kenya 245, Indonesia 236**. Group key for splitting is `Batch and labid` so a physical sample's rows always stay together (preventing leakage).
+
+Two structural sources of duplicate rows in the public data, both kept for paper-faithful replication:
+1. Reference table: 82 sample IDs have 2 reference rows differing only in geographic coordinates (and sometimes texture columns) — likely a database-edit history artefact. Same OC, country, depth, pH.
+2. Spectra table: 155 sample IDs have 2 distinct spectra — genuine repeat scans of the same physical sample. The paper's "4 wells × 32 scans averaged" only refers to within-spectrum averaging; samples re-measured in separate scan sessions contribute multiple averaged spectra to the dataset.
+
+Quality concern (deferred — flag for the discussion section of our paper, not for now): keeping reference duplicates effectively double-weights ~82 samples. Defensible because the paper does this, but worth revisiting.
+
+---
+
 ## 1. Data source
 
 1. Library: ISRIC global soil IR library — `https://www.isric.org/explore/library`.
@@ -19,16 +36,17 @@ This document captures every experimental detail needed to reproduce the paper's
 
 ## 2. Subsets
 
-| Subset | Modelling n (paper) | Descriptive n (paper §2.1) |
-|---|---|---|
-| Global | 3997 | 3997 |
-| China | 262 | 245 |
-| Kenya | 245 | 239 |
-| Indonesia | 236 | 226 |
+| Subset | Modelling n | OC median % | OC IQR % | OC range % | n_peat (OC ≥ 12%) | peat % |
+|---|---|---|---|---|---|---|
+| Global | 3997 | 0.49 | 0.97 | 0.00–60.00 | 26 | 0.62 |
+| China | 262 | 0.41 | 0.65 | 0.00–6.03 | 0 | 0.00 |
+| Kenya | 245 | 0.78 | 1.32 | 0.03–14.71 | 3 | 0.87 |
+| Indonesia | 236 | 1.01 | 2.33 | 0.00–30.80 | 2 | 0.86 |
 
-1. Modelling subsets restricted to "records with complete spectra and QC criteria consistent with prior work" (Table S1).
-2. **[UNSPECIFIED — likely paper inconsistency]** Modelling n is *higher* than descriptive n for each country, despite the paper saying modelling adds *additional* QC filters on top of "non-missing OC". This needs to be resolved by reading Table S1 (supplementary) and/or inspecting the ISRIC raw data.
-3. Peat / high-organic flag: SOC ≥ 12 % (descriptive only — *not* used to drop samples).
+Source: `resource/supplementary.xlsx`, sheet `mmc1` (Table S1).
+
+1. The paper's §2.1 prose lists slightly lower country n's (China 245, Kenya 239, Indonesia 226) — those reflect the *intersection* of non-missing OC ∩ non-missing pH(H₂O) ∩ non-missing clay used for the descriptive table only. The modelling subsets retain the larger "non-missing OC, complete spectra" sets above. Confirmed against Table S1 columns `pH_H2O_n` and `Clay_n`, which are smaller than `n (OC)`.
+2. Peat / high-organic flag: SOC ≥ 12 % (descriptive only — *not* used to drop samples). Counts: Global 26, China 0, Kenya 3, Indonesia 2.
 
 ## 3. Preprocessing options compared (5)
 
@@ -109,7 +127,7 @@ Calibration columns are also in the paper (Table 1) and will be tracked but are 
 
 1. Random seed value to use (paper does not state).
 2. Grouping key for "replicates from same sample/site": confirm against ISRIC schema (likely `profile_id` + `top` + `bottom` depths).
-3. Resolve modelling-vs-descriptive n discrepancy for China / Kenya / Indonesia.
+3. ~~Resolve modelling-vs-descriptive n discrepancy~~ — RESOLVED via Table S1: modelling uses non-missing OC ∩ complete-spectra (3997/262/245/236). Prose §2.1 numbers were the property-intersection used for descriptive stats only.
 4. Single 80/20 split vs repeated outer K-fold — adopt single split (working assumption) unless supplementary clarifies.
 5. SG / SGD hyperparameter selection criterion (assume same one-SE PLSR-CV pipeline unless stated otherwise).
 6. RPIQ denominator IQR scope — assume validation-set observed SOC.
