@@ -39,6 +39,8 @@ DOUBLE_SUPERVISED_EPOCHS = 400
 PLSR_PBN_LV_COUNT = 15
 P2BN_SOC_LOSS_WEIGHT = 0.8
 P2BN_RECONSTRUCTION_LOSS_WEIGHT = 0.2
+P2BN_SUPERVISED_EPOCHS = 100
+P2BN_LOSS_SCALE_EMA_MOMENTUM = 0.9
 
 
 def load_one_preprocessed_pair(dataset_name, preprocessing_name):
@@ -122,15 +124,37 @@ def train_p2bn_jointly(p2bn_model, train_spectra, train_target):
     reconstruction_loss_fn = nn.MSELoss()
     train_loader = build_loader_features_and_targets(train_spectra, train_target, shuffle=True)
 
-    for epoch_index in range(SUPERVISED_EPOCHS):
+    soc_loss_running_scale = None
+    reconstruction_loss_running_scale = None
+
+    for epoch_index in range(P2BN_SUPERVISED_EPOCHS):
         for batch_spectra, batch_target in train_loader:
             optimizer.zero_grad()
             soc_prediction, reconstructed_spectra = p2bn_model(batch_spectra)
             soc_loss_value = soc_loss_fn(soc_prediction, batch_target)
             reconstruction_loss_value = reconstruction_loss_fn(reconstructed_spectra, batch_spectra)
+
+            soc_loss_scalar = float(soc_loss_value.detach().item())
+            reconstruction_loss_scalar = float(reconstruction_loss_value.detach().item())
+            if soc_loss_running_scale is None:
+                soc_loss_running_scale = soc_loss_scalar
+                reconstruction_loss_running_scale = reconstruction_loss_scalar
+            else:
+                soc_loss_running_scale = (
+                    P2BN_LOSS_SCALE_EMA_MOMENTUM * soc_loss_running_scale
+                    + (1.0 - P2BN_LOSS_SCALE_EMA_MOMENTUM) * soc_loss_scalar
+                )
+                reconstruction_loss_running_scale = (
+                    P2BN_LOSS_SCALE_EMA_MOMENTUM * reconstruction_loss_running_scale
+                    + (1.0 - P2BN_LOSS_SCALE_EMA_MOMENTUM) * reconstruction_loss_scalar
+                )
+
+            soc_loss_normalised = soc_loss_value / max(soc_loss_running_scale, 1e-8)
+            reconstruction_loss_normalised = reconstruction_loss_value / max(reconstruction_loss_running_scale, 1e-8)
+
             combined_loss = (
-                P2BN_SOC_LOSS_WEIGHT * soc_loss_value
-                + P2BN_RECONSTRUCTION_LOSS_WEIGHT * reconstruction_loss_value
+                P2BN_SOC_LOSS_WEIGHT * soc_loss_normalised
+                + P2BN_RECONSTRUCTION_LOSS_WEIGHT * reconstruction_loss_normalised
             )
             combined_loss.backward()
             optimizer.step()
@@ -237,11 +261,13 @@ def build_configuration_block_for_method(method_name):
     if method_name == "p2bn":
         return {
             "random_seed": RANDOM_SEED, "batch_size": BATCH_SIZE, "learning_rate": LEARNING_RATE,
-            "supervised_epochs": SUPERVISED_EPOCHS,
+            "supervised_epochs": P2BN_SUPERVISED_EPOCHS,
             "uses_batchnorm": True, "batchnorm_pretrained": False, "batchnorm_jointly_finetuned_with_head": True,
             "joint_autoencoder_branch": True,
             "soc_loss_weight": P2BN_SOC_LOSS_WEIGHT,
             "reconstruction_loss_weight": P2BN_RECONSTRUCTION_LOSS_WEIGHT,
+            "loss_normalisation": "ema_per_loss",
+            "loss_scale_ema_momentum": P2BN_LOSS_SCALE_EMA_MOMENTUM,
         }
     raise ValueError(f"unknown method: {method_name}")
 
