@@ -47,7 +47,8 @@ summarise_results.py                             # step 5b: table1_replication.c
 model_baseline_ann.py                            # DL branch: BaselineSocAnn (no preprocessing layer)
 model_pbn_ann.py                                 # DL branch: LearnedPreprocessingAutoencoder + PbnSocAnn (BN as learned preprocessing)
 model_rbn_ann.py                                 # DL branch: RbnSocAnn (fresh BN + MLP head; used by both rbn and r2bn)
-train_pbn_experiment.py                          # DL branch: runs 5 methods (baseline / pbn / plsr_pbn / rbn / r2bn) across 4 datasets x 6 preprocessings = 120 cells
+model_p2bn_ann.py                                 # DL branch: P2bnSocAnn (one BN shared by SOC head and an AE branch; joint loss)
+train_pbn_experiment.py                          # DL branch: runs 6 methods (baseline / pbn / plsr_pbn / rbn / r2bn / p2bn) across 4 datasets x 6 preprocessings = 144 cells
 report_pbn_experiment.py                         # DL branch: prints per-dataset block-format report + 6 head-to-head win counts from cell_results.csv
 requirements.txt
 experiment_spec.md                               # full paper-replication spec, ambiguity decisions, numbers to match
@@ -73,10 +74,10 @@ results/                                         # gitignore-d, all model output
     {dataset}_{method}.json                      # PLSR: winning hyperparams + train/test metrics
     {dataset}_{method}_predictions.csv           # PLSR: ref cols + observed + predicted, train+test concat
   table1_replication.csv                         # PLSR: paper vs ours, with PASS/FAIL flags per criterion
-  pbn_experiment/                                # DL branch: 5 methods compared across all (dataset × preprocessing)
-    cells/{dataset}_{preprocessing}_{baseline|pbn|plsr_pbn|rbn|r2bn}.json
-    predictions/{dataset}_{preprocessing}_{baseline|pbn|plsr_pbn|rbn|r2bn}.csv
-    cell_results.csv                             # aggregate of all 120 cells
+  pbn_experiment/                                # DL branch: 6 methods compared across all (dataset × preprocessing)
+    cells/{dataset}_{preprocessing}_{baseline|pbn|plsr_pbn|rbn|r2bn|p2bn}.json
+    predictions/{dataset}_{preprocessing}_{baseline|pbn|plsr_pbn|rbn|r2bn|p2bn}.csv
+    cell_results.csv                             # aggregate of all 144 cells
 ```
 
 Every CSV row carries: reference columns (Org C, Country, Plotcode, BTOP, BBOT, lat, lon, etc.) + the spectral columns. Reference cols are not used by the model but are kept for downstream analysis.
@@ -95,7 +96,7 @@ Every CSV row carries: reference columns (Org C, Country, Plotcode, BTOP, BBOT, 
 10. Per-cell predictions file format: 17 reference columns (country, lat/lon, depth, etc.) + `observed` + `predicted`. No spectra. Lets downstream analysis slice errors by any reference attribute without rebuilding the spectra matrix.
 11. **MinMax preprocessing** added as a 6th method (per-feature, fit on train, applied to both folds). Lives in `make_preprocessed.py` / `verify_preprocessed.py`. Intentionally NOT added to `train_plsr.py` / `summarise_results.py` because the paper's Table 1 has no minmax row to compare against — minmax is an addition for the DL branch only.
 12. **PBN (Pretrained BatchNorm) — our DL-branch preprocessing layer.** A BatchNorm1d trained inside an autoencoder (Input -> BN -> Encoder -> Decoder -> Input'); after pretraining, the encoder/decoder are discarded and the BN is reused as a learned preprocessing in front of an MLP regressor. Both `baseline` (raw -> MLP) and `pbn` (raw -> BN -> MLP) share the exact same `Linear(n_features -> 32) -> ReLU -> Linear(32 -> 1)` head for fair comparison. Same 32-hidden head, same Adam/MSE/200 epochs/batch 64/lr 1e-3/seed 42; PBN adds a 100-epoch AE pretrain phase on the train spectra.
-13. **PBN ablations: `plsr_pbn`, `rbn`, `r2bn`** added to the same experiment matrix. `plsr_pbn` = AE-pretrained BN (frozen) → `sklearn.PLSRegression(n_components=15, scale=False)`; tests whether PBN's gain is ANN-specific (LV=15 fixed; covers paper Table 1's 4–14 range without per-cell tuning). `rbn` = fresh BN + same MLP head, 200 supervised epochs; isolates the AE pretrain by comparing against `pbn`. `r2bn` = fresh BN + same MLP head, 400 supervised epochs; controls for the "PBN just got more total compute" critique against `pbn`. All five methods share `data/preprocessed/` inputs, so the preprocessing dimension is held fixed when comparing methods within a cell. Per-cell JSON `configuration` block is method-specific (records actual epoch counts, BN regime, downstream regressor) so the saved metadata is honest.
+13. **PBN ablations: `plsr_pbn`, `rbn`, `r2bn`, `p2bn`** added to the same experiment matrix. `plsr_pbn` = AE-pretrained BN (frozen) → `sklearn.PLSRegression(n_components=15, scale=False)`; tests whether PBN's gain is ANN-specific (LV=15 fixed; covers paper Table 1's 4–14 range without per-cell tuning). `rbn` = fresh BN + same MLP head, 200 supervised epochs; isolates the AE pretrain by comparing against `pbn`. `r2bn` = fresh BN + same MLP head, 400 supervised epochs; controls for the "PBN just got more total compute" critique against `pbn`. `p2bn` = one BN shared by the SOC head and an AE branch, trained jointly with loss = `0.8 * SOC_MSE + 0.2 * recon_MSE` for 200 supervised epochs; tests whether joint reconstruction-pressure regularises the BN better than sequential AE-pretrain-then-supervised. All six methods share `data/preprocessed/` inputs, so the preprocessing dimension is held fixed when comparing methods within a cell. Per-cell JSON `configuration` block is method-specific (records actual epoch counts, BN regime, downstream regressor, loss weights) so the saved metadata is honest.
 
 ---
 
@@ -283,18 +284,20 @@ Architecture:
 1. `BaselineSocAnn` (`model_baseline_ann.py`): plain MLP — `Linear(1763 → 32) → ReLU → Linear(32 → 1)`.
 2. `LearnedPreprocessingAutoencoder` + `PbnSocAnn` (`model_pbn_ann.py`): autoencoder is `BN(1763) → Linear(1763 → 256) → ReLU → Linear(256 → 64) → Linear(64 → 256) → ReLU → Linear(256 → 1763)`. After Phase A pretrain on train spectra (100 epochs, MSE reconstruction), encoder/decoder are discarded; only the BN is reused. PBN regressor = `BN(pretrained) → Linear(1763 → 32) → ReLU → Linear(32 → 1)`. Both BN and head are trainable in Phase B.
 3. `RbnSocAnn` (`model_rbn_ann.py`): same shape as PbnSocAnn but the BN is initialised fresh — used by both `rbn` (200 supervised epochs) and `r2bn` (400 supervised epochs).
+4. `P2bnSocAnn` (`model_p2bn_ann.py`): two-stream model sharing one BN. Stream 1: `BN → MLP(32) → 1` for SOC. Stream 2: `BN → encoder(1763→256→64) → decoder(64→256→1763)` for reconstruction. Joint loss = `0.8 * MSE(soc_pred, soc_true) + 0.2 * MSE(reconstruction, raw_input)`. Trained jointly for 200 supervised epochs (no separate Phase A).
 
-The MLP head is identical across baseline / pbn / rbn / r2bn — the only differences are (a) whether a BN is in front, and (b) whether that BN was AE-pretrained before supervised training, and (c) how many supervised epochs the BN+head pair gets.
+The MLP head is identical across baseline / pbn / rbn / r2bn / p2bn — the only differences are (a) whether a BN is in front, (b) how the BN is trained (AE-pretrained, fresh-and-supervised-only, or fresh-and-jointly-supervised+reconstruction), and (c) how many supervised epochs.
 
-Five methods compared per cell:
+Six methods compared per cell:
 
-| method | BN in front | BN pretrained (Phase A AE) | downstream regressor | supervised epochs |
+| method | BN in front | BN learned how | downstream regressor | epochs |
 |---|---|---|---|---|
-| `baseline` | no | — | MLP(32) | 200 |
-| `pbn` | yes | yes | MLP(32) | 200 |
-| `plsr_pbn` | yes (frozen) | yes | PLSR(LV=15, scale=False) | — (one-shot fit) |
-| `rbn` | yes | no | MLP(32) | 200 |
-| `r2bn` | yes | no | MLP(32) | 400 |
+| `baseline` | no | — | MLP(32) | 200 sup |
+| `pbn` | yes | Phase A AE (100) → joint with head (200 sup) | MLP(32) | 100 AE + 200 sup |
+| `plsr_pbn` | yes (frozen) | Phase A AE only | PLSR(LV=15, scale=False) | 100 AE + 1-shot PLSR |
+| `rbn` | yes | joint with head (200 sup) | MLP(32) | 200 sup |
+| `r2bn` | yes | joint with head (400 sup) | MLP(32) | 400 sup |
+| `p2bn` | yes | joint with head + AE branch (200 sup, weights 0.8/0.2) | MLP(32) | 200 sup |
 
 `plsr_pbn` exists to test the "is PBN ANN-locked?" critique — if `plsr_pbn` improves over the existing PLSR results (`results/per_cell/`) and over `baseline`, then PBN's benefit transfers to a non-NN downstream regressor. The BN is frozen (eval mode) after Phase A and the BN-output of train spectra is fitted by sklearn `PLSRegression(n_components=15, scale=False)`. LV=15 is fixed (paper's Table 1 LVs span 4–14, so 15 covers the range without per-cell tuning — this keeps the ablation fast and apples-to-apples across cells).
 
@@ -303,16 +306,18 @@ Five methods compared per cell:
 - `rbn` vs `pbn` isolates the AE pretrain (Phase A) — same architecture, same supervised epochs, only PBN had AE-pretraining.
 - `r2bn` vs `pbn` controls for total compute — R2BN gives the BN+head 400 supervised epochs (≈ PBN's 100 AE + 200 supervised in raw step count), so if PBN still wins, the win is *not* from cumulative gradient steps.
 
-Experiment matrix: 4 datasets × 6 preprocessings × 5 methods = **120 cells**. Per cell:
+`p2bn` tests "what if the AE objective is trained *with* the SOC head instead of *before* it?" — the BN sees both gradients simultaneously, so it has to satisfy both objectives concurrently. Hypothesis: the reconstruction term acts as regularisation on the BN, helping with overfit-prone small datasets.
+
+Experiment matrix: 4 datasets × 6 preprocessings × 6 methods = **144 cells**. Per cell:
 
 1. Read `data/preprocessed/{dataset}_{preprocessing}_{train,test}.csv` — the preprocessing has already been applied; the script does no further preprocessing.
 2. Reset all RNG seeds to 42.
 3. Train (Adam, MSE, batch 64, lr 1e-3; epoch counts as in table above; PBN/plsr_pbn add 100 epochs of AE pretrain).
 4. Evaluate on test, compute RMSE / R² / MBD / RPIQ.
-5. Write `results/pbn_experiment/cells/{dataset}_{preprocessing}_{baseline|pbn|plsr_pbn|rbn|r2bn}.json` and `…/predictions/…csv`. The JSON `configuration` block is method-specific (records the actual epoch counts and BN regime for that cell).
+5. Write `results/pbn_experiment/cells/{dataset}_{preprocessing}_{baseline|pbn|plsr_pbn|rbn|r2bn|p2bn}.json` and `…/predictions/…csv`. The JSON `configuration` block is method-specific (records the actual epoch counts, BN regime, and (for p2bn) the loss weights).
 6. Idempotent — cells with an existing JSON are skipped.
 
-After all cells: aggregate into `results/pbn_experiment/cell_results.csv`. `report_pbn_experiment.py` reads that CSV and prints a per-dataset block-format report with all five methods, delta-RMSE per preprocessing for six method pairs (`pbn` vs `baseline`, `pbn` vs `rbn`, `pbn` vs `r2bn`, `plsr_pbn` vs `baseline`, `plsr_pbn` vs `pbn`, `rbn` vs `baseline`), and per-pair win counts.
+After all cells: aggregate into `results/pbn_experiment/cell_results.csv`. `report_pbn_experiment.py` reads that CSV and prints a per-dataset block-format report with all six methods, delta-RMSE per preprocessing for nine method pairs (`pbn` vs {baseline, rbn, r2bn}, `plsr_pbn` vs {baseline, pbn}, `rbn` vs baseline, `p2bn` vs {baseline, pbn, rbn}), and per-pair win counts.
 
 #### Headline results (test-RMSE win rates, 24 cells per pair)
 
@@ -324,6 +329,11 @@ After all cells: aggregate into `results/pbn_experiment/cell_results.csv`. `repo
 | pbn vs r2bn | does PBN still beat raw-BN even with 2× supervised epochs? | **pbn 17/24** — yes; PBN's edge is not just compute |
 | plsr_pbn vs baseline | is PBN ANN-locked, or does it transfer? | **plsr_pbn 14/24** — Global 0/6 (PLSR-LV15 underfits at n=3197), China 4/6, Kenya 5/6, Indonesia 5/6 |
 | plsr_pbn vs pbn | which downstream wins? | **pbn 14/24** on Global+China; **plsr_pbn wins 5/6** on each of Kenya+Indonesia (small-data regime favours regularised linear head) |
+| p2bn vs baseline | does joint AE+SOC training beat raw inputs? | **p2bn 13/24** (Global 4/6, China 6/6, Kenya 2/6, Indonesia 1/6) |
+| p2bn vs pbn | does joint training beat sequential pretrain-then-finetune? | **p2bn 11/24** — roughly tied with PBN overall, **p2bn wins 5/6 on Indonesia** (joint reconstruction term acts as regulariser) but loses on Global SNV/MSC and Kenya cells where the recon-loss term dominates over SOC-loss given input scale |
+| p2bn vs rbn | does adding a recon side-task help vs plain fresh BN? | **p2bn 13/24** — marginal at best |
+
+P2BN takeaway: the fixed loss weights (α=0.8 SOC, β=0.2 reconstruction) interact unpredictably with input scale. On low-variance inputs (SNV/MSC) the AE branch dominates and P2BN underfits SOC; on raw absorbance / SGD it works fine. P2BN's regularisation effect *does* show up on Indonesia (every preprocessing improves vs PBN there) but the deltas are tiny (≤ 0.05 RMSE) and P2BN is still worse than the raw `baseline` on Indonesia. Net: P2BN is not a clear winner over PBN; the joint-training idea is plausible but needs scale-aware loss weighting (e.g. normalise each loss by its running mean, or learn α, β) before the comparison is fair.
 
 Reading: most of PBN's lift over `baseline` is actually attributable to the BN itself (raw or pretrained). The AE pretrain provides a smaller, real, but non-dominant additional gain. The claim "PBN works only because it gets more compute" is rejected (R2BN doesn't catch up). The claim "PBN is ANN-locked" is partially rejected — PLSR+PBN beats raw-input baseline on three of the four datasets (everywhere except Global, where 15 LVs is too tight a budget for the size of the global pool). Indonesia is anomalous: every ANN-based method overfits its 188-row train set, and only the regularised PLSR head (`plsr_pbn`) generalises well.
 

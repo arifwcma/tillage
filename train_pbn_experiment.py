@@ -12,6 +12,7 @@ from sklearn.cross_decomposition import PLSRegression
 from model_baseline_ann import BaselineSocAnn
 from model_pbn_ann import LearnedPreprocessingAutoencoder, PbnSocAnn
 from model_rbn_ann import RbnSocAnn
+from model_p2bn_ann import P2bnSocAnn
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -22,7 +23,7 @@ PREDICTIONS_DIR = RESULTS_DIR / "predictions"
 
 DATASET_NAMES = ["global", "china", "kenya", "indonesia"]
 PREPROCESSING_NAMES = ["none", "snv", "msc", "sg", "sgd", "minmax"]
-METHOD_NAMES = ["baseline", "pbn", "plsr_pbn", "rbn", "r2bn"]
+METHOD_NAMES = ["baseline", "pbn", "plsr_pbn", "rbn", "r2bn", "p2bn"]
 
 SOC_COLUMN = "Org C"
 WAVENUMBER_COLUMN_PATTERN = re.compile(r"^m\d+(?:\.\d+)?$")
@@ -36,6 +37,8 @@ SUPERVISED_EPOCHS = 200
 AUTOENCODER_PRETRAIN_EPOCHS = 100
 DOUBLE_SUPERVISED_EPOCHS = 400
 PLSR_PBN_LV_COUNT = 15
+P2BN_SOC_LOSS_WEIGHT = 0.8
+P2BN_RECONSTRUCTION_LOSS_WEIGHT = 0.2
 
 
 def load_one_preprocessed_pair(dataset_name, preprocessing_name):
@@ -110,6 +113,34 @@ def train_supervised_regressor(regressor_model, train_spectra, train_target, n_e
             loss = soc_loss(predicted_soc, batch_target)
             loss.backward()
             optimizer.step()
+
+
+def train_p2bn_jointly(p2bn_model, train_spectra, train_target):
+    p2bn_model.train()
+    optimizer = torch.optim.Adam(p2bn_model.parameters(), lr=LEARNING_RATE)
+    soc_loss_fn = nn.MSELoss()
+    reconstruction_loss_fn = nn.MSELoss()
+    train_loader = build_loader_features_and_targets(train_spectra, train_target, shuffle=True)
+
+    for epoch_index in range(SUPERVISED_EPOCHS):
+        for batch_spectra, batch_target in train_loader:
+            optimizer.zero_grad()
+            soc_prediction, reconstructed_spectra = p2bn_model(batch_spectra)
+            soc_loss_value = soc_loss_fn(soc_prediction, batch_target)
+            reconstruction_loss_value = reconstruction_loss_fn(reconstructed_spectra, batch_spectra)
+            combined_loss = (
+                P2BN_SOC_LOSS_WEIGHT * soc_loss_value
+                + P2BN_RECONSTRUCTION_LOSS_WEIGHT * reconstruction_loss_value
+            )
+            combined_loss.backward()
+            optimizer.step()
+
+
+def predict_soc_for_p2bn(p2bn_model, spectra_matrix):
+    p2bn_model.eval()
+    with torch.no_grad():
+        soc_prediction, _ = p2bn_model(to_device_tensor(spectra_matrix))
+    return soc_prediction.cpu().numpy()
 
 
 def transform_spectra_through_frozen_batchnorm(autoencoder_model, spectra_matrix):
@@ -202,6 +233,15 @@ def build_configuration_block_for_method(method_name):
             "random_seed": RANDOM_SEED, "batch_size": BATCH_SIZE, "learning_rate": LEARNING_RATE,
             "supervised_epochs": DOUBLE_SUPERVISED_EPOCHS,
             "uses_batchnorm": True, "batchnorm_pretrained": False, "batchnorm_jointly_finetuned_with_head": True,
+        }
+    if method_name == "p2bn":
+        return {
+            "random_seed": RANDOM_SEED, "batch_size": BATCH_SIZE, "learning_rate": LEARNING_RATE,
+            "supervised_epochs": SUPERVISED_EPOCHS,
+            "uses_batchnorm": True, "batchnorm_pretrained": False, "batchnorm_jointly_finetuned_with_head": True,
+            "joint_autoencoder_branch": True,
+            "soc_loss_weight": P2BN_SOC_LOSS_WEIGHT,
+            "reconstruction_loss_weight": P2BN_RECONSTRUCTION_LOSS_WEIGHT,
         }
     raise ValueError(f"unknown method: {method_name}")
 
@@ -386,6 +426,41 @@ def run_one_rbn_cell(dataset_name, preprocessing_name):
     )
 
 
+def run_one_p2bn_cell(dataset_name, preprocessing_name):
+    cell_json_path, _ = cell_output_paths(dataset_name, preprocessing_name, "p2bn")
+    if cell_json_path.exists():
+        print(f"  [skip] {dataset_name} / {preprocessing_name} / p2bn")
+        return
+
+    cell_start_seconds = time.time()
+    reset_all_random_seeds()
+
+    train_dataframe, test_dataframe = load_one_preprocessed_pair(dataset_name, preprocessing_name)
+    train_spectra, train_target = extract_spectra_and_target(train_dataframe)
+    test_spectra, test_target = extract_spectra_and_target(test_dataframe)
+    n_features = train_spectra.shape[1]
+
+    p2bn_model = P2bnSocAnn(n_features).to(DEVICE)
+    train_p2bn_jointly(p2bn_model, train_spectra, train_target)
+
+    train_predictions = predict_soc_for_p2bn(p2bn_model, train_spectra)
+    test_predictions = predict_soc_for_p2bn(p2bn_model, test_spectra)
+    train_metrics = compute_metrics_dictionary(train_target, train_predictions)
+    test_metrics = compute_metrics_dictionary(test_target, test_predictions)
+
+    runtime_seconds = time.time() - cell_start_seconds
+    save_cell_result(dataset_name, preprocessing_name, "p2bn", train_metrics, test_metrics, runtime_seconds)
+    save_cell_predictions(
+        dataset_name, preprocessing_name, "p2bn",
+        train_dataframe, train_predictions, test_dataframe, test_predictions,
+    )
+    print(
+        f"  p2bn    : train RMSE={train_metrics['rmse']:.4f}  "
+        f"test RMSE={test_metrics['rmse']:.4f}  R2={test_metrics['r2']:.4f}  "
+        f"({runtime_seconds:.1f} s)"
+    )
+
+
 def run_one_r2bn_cell(dataset_name, preprocessing_name):
     cell_json_path, _ = cell_output_paths(dataset_name, preprocessing_name, "r2bn")
     if cell_json_path.exists():
@@ -468,6 +543,7 @@ def main():
             run_one_plsr_pbn_cell(dataset_name, preprocessing_name)
             run_one_rbn_cell(dataset_name, preprocessing_name)
             run_one_r2bn_cell(dataset_name, preprocessing_name)
+            run_one_p2bn_cell(dataset_name, preprocessing_name)
 
     aggregate_all_cells_into_summary_csv()
     overall_elapsed_seconds = time.time() - overall_start_seconds

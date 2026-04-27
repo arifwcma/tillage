@@ -28,11 +28,12 @@ METHOD_DISPLAY_NAMES = {
     "plsr_pbn": "plsr_pbn",
     "rbn": "rbn",
     "r2bn": "r2bn",
+    "p2bn": "p2bn",
 }
 
 DATASET_ORDER = ["global", "china", "kenya", "indonesia"]
 PREPROCESSING_ORDER = ["none", "snv", "msc", "sg", "sgd", "minmax"]
-METHOD_ORDER = ["baseline", "pbn", "plsr_pbn", "rbn", "r2bn"]
+METHOD_ORDER = ["baseline", "pbn", "plsr_pbn", "rbn", "r2bn", "p2bn"]
 
 PBN_VS_BASELINE_PAIRS = [
     ("pbn", "baseline"),
@@ -41,6 +42,9 @@ PBN_VS_BASELINE_PAIRS = [
     ("plsr_pbn", "baseline"),
     ("plsr_pbn", "pbn"),
     ("rbn", "baseline"),
+    ("p2bn", "baseline"),
+    ("p2bn", "pbn"),
+    ("p2bn", "rbn"),
 ]
 
 

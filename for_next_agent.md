@@ -15,13 +15,14 @@ Read `.cursor/project.md` and `.cursor/instructions.md` first — they cover the
 
 1. Steps 1-5 done: download → join/filter → 80/20 grouped+stratified split → 5 preprocessings (now 6 — see point 3) → PLSR with repeated 10-fold CV + one-SE rule + test eval.
 2. Step 6 (mainstream) not started: replace PLSR with a DL model (1D CNN baseline first), same splits, same per-cell JSON + predictions CSV layout, write to `results/per_cell_dl/`.
-3. Step 7 (parallel branch, complete) — DL/PBN preprocessing experiment + ablations. We added a 6th preprocessing **`minmax`** (per-feature, fit on train) and built `train_pbn_experiment.py` + `report_pbn_experiment.py` to compare 5 methods across all 4 datasets × 6 preprocessings = 120 cells:
+3. Step 7 (parallel branch, complete) — DL/PBN preprocessing experiment + ablations. We added a 6th preprocessing **`minmax`** (per-feature, fit on train) and built `train_pbn_experiment.py` + `report_pbn_experiment.py` to compare 6 methods across all 4 datasets × 6 preprocessings = 144 cells:
    - `baseline` — MLP only (`Linear(1763 → 32) → ReLU → Linear(32 → 1)`).
    - `pbn` — pretrained BN (Phase A AE) → same MLP head; BN+head jointly trainable in Phase B.
    - `plsr_pbn` (ablation) — pretrained BN frozen → `sklearn.PLSRegression(n_components=15, scale=False)`. Tests "is PBN ANN-locked?".
    - `rbn` (ablation) — fresh BN + same MLP head, 200 supervised epochs. Isolates the AE pretrain by comparing against `pbn`.
    - `r2bn` (ablation) — fresh BN + same MLP head, 400 supervised epochs. Controls for the "PBN just got more total compute" critique.
-   Models live in `model_baseline_ann.py`, `model_pbn_ann.py`, `model_rbn_ann.py`. Outputs in `results/pbn_experiment/cells/`, `…/predictions/`, `…/cell_results.csv`. Minmax is NOT in `train_plsr.py` / `summarise_results.py` (paper Table 1 has no minmax row). Headline win-rates are written into `our_task_log.md` Step 7. CPU runtime: ~16 min for all 120 cells from scratch.
+   - `p2bn` (ablation) — one BN shared by SOC head + AE branch, trained jointly with `0.8 * soc_mse + 0.2 * recon_mse` for 200 epochs. Tests whether joint reconstruction-pressure regularises the BN better than sequential AE-then-supervised.
+   Models live in `model_baseline_ann.py`, `model_pbn_ann.py`, `model_rbn_ann.py`, `model_p2bn_ann.py`. Outputs in `results/pbn_experiment/cells/`, `…/predictions/`, `…/cell_results.csv`. Minmax is NOT in `train_plsr.py` / `summarise_results.py` (paper Table 1 has no minmax row). Headline win-rates are in `our_task_log.md` Step 7. CPU runtime: ~21 min for all 144 cells from scratch.
 
 ## Important truths about the paper replication (don't relearn the hard way)
 
@@ -50,7 +51,7 @@ Read `.cursor/project.md` and `.cursor/instructions.md` first — they cover the
 2. Architecture: small 1D CNN — Conv1d → BN → ReLU → MaxPool ×3, then 2 dense layers, ~50k params. Adam, MSE, cosine-anneal LR, early stopping on a single fixed 20% slice of train (no inner CV — too expensive).
 3. Same 5 preprocessings as PLSR (None / SNV / MSC / SG / SGD). For SG/SGD use the paper's grid as a hyperparameter (or fix a sensible default and tune separately later — confirm with Arif before committing).
 4. Companion `summarise_dl_vs_plsr.py`: side-by-side table DL-ours vs PLSR-ours vs PLSR-paper. Add the paired Wilcoxon + Holm tests the paper used.
-5. The earlier prototype scripts `train_bn_ae_global.py` / `train_baselines_global.py` were superseded and removed; the structured DL/PBN experiment now lives in `train_pbn_experiment.py` + `model_baseline_ann.py` + `model_pbn_ann.py` + `model_rbn_ann.py`. Indonesia is the known outlier — every ANN-based method (`baseline`, `pbn`, `rbn`, `r2bn`) overfits its 188-row train set; only `plsr_pbn` (regularised linear head) generalises there. Don't draw conclusions about PBN's overall efficacy from Indonesia in isolation.
+5. The earlier prototype scripts `train_bn_ae_global.py` / `train_baselines_global.py` were superseded and removed; the structured DL/PBN experiment now lives in `train_pbn_experiment.py` + `model_baseline_ann.py` + `model_pbn_ann.py` + `model_rbn_ann.py` + `model_p2bn_ann.py`. Indonesia is the known outlier — every ANN-based method (`baseline`, `pbn`, `rbn`, `r2bn`) overfits its 188-row train set; only `plsr_pbn` (regularised linear head) generalises there. Don't draw conclusions about PBN's overall efficacy from Indonesia in isolation.
 
 ## What Arif wants from you (style reminders not in instructions.md)
 
