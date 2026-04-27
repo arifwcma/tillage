@@ -16,6 +16,8 @@ pip install -r requirements.txt
 python download_data.py        # downloads + verifies + extracts the public ICRAF/ISRIC MIR library
 python data_loader.py          # builds data/raw/{global,china,kenya,indonesia}.csv
 python make_splits.py          # builds data/splits/{dataset}_split.csv  (single 80/20, group=Batch and labid, strata=SOC quartile, seed=42)
+python make_preprocessed.py    # builds data/preprocessed/{dataset}_{none|snv|msc|sg|sgd}_{train|test}.csv  (40 files, ~720 MB total)
+python verify_preprocessed.py  # optional: sanity-checks SNV/MSC/SG/SGD math on the global train set
 # ... (further steps appended below as we add them)
 ```
 
@@ -36,6 +38,8 @@ The PDF of the paper itself (`resource/tong.pdf`) is also expected to be placed 
 download_data.py                                 # step 1: fetches and extracts the raw dataset
 data_loader.py                                   # step 2: builds raw per-domain CSVs
 make_splits.py                                   # step 3: builds 80/20 train/test split tables
+make_preprocessed.py                             # step 4: applies the 5 preprocessings, writes train/test CSVs
+verify_preprocessed.py                           # one-shot integrity check on preprocessed outputs
 requirements.txt
 experiment_spec.md                               # full paper-replication spec, ambiguity decisions, numbers to match
 our_task_log.md                                  # this file
@@ -53,7 +57,8 @@ data/                                            # gitignored, all derived CSVs
     {global,china,kenya,indonesia}.csv           # joined + OC-filtered + 4000–600 cm⁻¹
   splits/
     {dataset}_split.csv                          # Batch and labid → 'train' | 'test' (3997+262+245+236 rows)
-  preprocessed/                                  # (later) {dataset}_{none|snv|msc|sg|sgd}_{train|test}.csv
+  preprocessed/
+    {dataset}_{none|snv|msc|sg|sgd}_{train|test}.csv   # 40 files, ~720 MB total
 ```
 
 Every CSV row carries: reference columns (Org C, Country, Plotcode, BTOP, BBOT, lat, lon, etc.) + the spectral columns. Reference cols are not used by the model but are kept for downstream analysis.
@@ -127,5 +132,39 @@ Result (test_frac shown; quartile counts in run log):
 
 Quartile balance is within ±2 samples per quartile in every test set; no group leakage.
 
-### Step 4 — Preprocessing (next)
-The five regimes — None / SNV / MSC / SG / SGD — applied **fit-on-train, transform-on-test**, written as `data/preprocessed/{dataset}_{method}_{train|test}.csv`.
+### Step 4 — Preprocessing (`make_preprocessed.py`)
+
+For each (dataset × method × split) we write one CSV under `data/preprocessed/`. 4 datasets × 5 methods × 2 splits = **40 files**, ~720 MB. Every output CSV carries the same 17 reference columns (Org C, Country, lat/lon, depths, pH, clay, etc.) + 1763 transformed wavenumber columns (`m3999.7` … `m601.7`).
+
+Per-method math (all implemented in plain numpy / scipy — auditable against Tong et al. §2.3):
+
+1. **None** — identity. Spectra copied through unchanged so downstream code can treat all 5 methods uniformly (same path schema, same column layout).
+2. **SNV** — Standard Normal Variate, per-spectrum: `(x - mean(x)) / std(x, ddof=1)`. No fit step (independent per row).
+3. **MSC** — Multiplicative Scatter Correction. Reference spectrum = mean of **train** spectra only. For every row: solve `x ≈ a + b·ref` via mean-centred least squares, return `(x - a) / b`. Reference fitted on train, applied to both train and test.
+4. **SG** — Savitzky–Golay smoothing. `scipy.signal.savgol_filter` with window=11, polyorder=2, deriv=0, axis=1, mode="interp". No fit step (purely local convolution).
+5. **SGD** — Savitzky–Golay second derivative. Same as SG but with deriv=2.
+
+Decision on SG/SGD hyperparameters (window=11, polyorder=2):
+
+1. The paper tunes (window ∈ 7–31 odd, polyorder ∈ 2–3) inside the same repeated 10-fold CV that picks PLSR LVs. So SG/SGD parameters are properly a **modelling** decision, not a data-preparation decision.
+2. The artefact CSVs in `data/preprocessed/` use a single **exemplar** parameter pair (11, 2) so anyone can open them in a viewer to inspect what SG/SGD does to the spectra.
+3. The actual modelling step (next) will re-do SG/SGD inside the CV loop over the full grid, replacing these exemplar artefacts in the model's working memory. The on-disk CSV is illustrative; the model does not consume it for SG/SGD.
+
+Train/test partition is enforced by joining each raw CSV to `data/splits/{dataset}_split.csv` on `Batch and labid` (split table is deduplicated to one row per group on read; an assertion verifies all rows for the same group share a single fold label). MSC's reference spectrum is fit on the joined-train rows only — no test-set leakage.
+
+Sanity check (`verify_preprocessed.py`, run on `global_*_train.csv`):
+
+| method | check | result |
+|---|---|---|
+| SNV | per-row mean | range [-1.25e-14, 1.27e-14] (≈ 0) |
+| SNV | per-row std (ddof=1) | exactly 1.0 |
+| MSC | output shape | matches input |
+| MSC | range | [0.05, 3.26] vs raw [0.12, 3.00] (slight stretch, expected) |
+| SG  | smoothing diff | max |Δ| = 0.145, mean |Δ| = 7.1e-4 (small, as expected) |
+| SGD | range | [-5.1e-2, 3.6e-2], mean -5.7e-6 (small, centred near 0) |
+
+All 40 outputs produced no NaN / Inf (`np.isfinite(...).all()` asserted per file).
+
+### Step 5 — PLSR modelling (next)
+Per (dataset × method): build PLSR on the train CSV, tune LV count (and SG/SGD window/order for SG/SGD methods) via repeated 10-fold CV with the one-SE rule, refit on full 80%, evaluate on 20% test. Report RMSE / R² / MBD / RPIQ to compare with paper Table 1.
+
