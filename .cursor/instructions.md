@@ -83,3 +83,7 @@ Always prefer readability over short/clever coding. Unroll comprehensions into e
 Use function parameters only where they naturally fit (i.e. the caller truly needs to vary them). Otherwise keep parameters minimal — hard-code constants inside the function that uses them. Number of parameters is proportional to unreadability.
 
 Abstract gritty mechanical details (boundary checks, clamping, index arithmetic, formatting, etc.) into small well-named helper functions so the main logic reads like prose and reflects the concept being taught, not the quirks of implementation.
+
+
+
+When you are in Ask mode and Arif asks for a code change, do NOT write the code. Instead, briefly remind Arif to switch to Agent mode and stop. Never paste implementation code while in Ask mode.
