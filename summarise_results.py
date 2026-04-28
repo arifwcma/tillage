@@ -8,7 +8,7 @@ PER_CELL_DIR = PROJECT_ROOT / "results" / "per_cell"
 RESULTS_DIR = PROJECT_ROOT / "results"
 
 DATASET_NAMES = ["global", "china", "kenya", "indonesia"]
-METHOD_NAMES = ["none", "snv", "msc", "sg", "sgd", "minmax"]
+METHOD_NAMES = ["none", "snv", "msc", "sg", "sgd", "minmax", "lmm"]
 
 PAPER_TABLE_1 = {
     ("global", "none"):    {"factors": 10, "rmse": 2.077, "r2": 0.626, "mbd":  0.006, "rpiq": 0.426},

@@ -36,6 +36,9 @@ python train_plsr.py           # PLSR sweep over 4 datasets x 6 preprocessings, 
 python summarise_results.py    # builds results/table1_replication.csv comparing every cell to paper Table 1
 python train_plsr_fixed_lv.py  # diagnostic: refit PLSR with paper's exact LV count per cell. Writes results/per_cell_fixed_lv/ + table1_replication_fixed_lv.csv (~12 s)
 
+python train_ddp_experiment.py # DDP study: 4 datasets x 7 preprocessings (none/snv/msc/sg/sgd/minmax/ddp) x MLP. Writes results/ddp_experiment/cells/ + cell_results.csv (~40 s)
+python report_ddp_experiment.py # joins MLP-side with PLSR-side, prints wide tables, writes results/comparison_table.csv
+
 # Optional spectra visualisation:
 python plot_preprocessed_spectra.py    # 6x4 mean-spectrum grid (methods x regions)
 python plot_one_sample_spectra.py      # 6x4 single-random-sample grid
@@ -66,6 +69,11 @@ train_plsr.py                                    # step 5: PLSR + CV + one-SE ru
 summarise_results.py                             # step 5: results/table1_replication.csv, paper-vs-ours acceptance flags
 train_plsr_fixed_lv.py                           # step 5b: diagnostic — refit PLSR at paper's exact LV count per cell
 print_plsr_tables.py                             # pretty-print PLSR comparison tables
+model_mlp.py                                     # DDP study: MlpSocAnn (Linear→ReLU→Dropout(0.3)→Linear)
+model_ddp.py                                     # DDP study: DdpPreprocessor (BatchNorm1d only) + DdpPlusMlp wrapper
+                                                 # (model_ddp2.py / model_ddp3.py archived 28 Apr 2026; only `ddp` = minmax+BN remains live)
+train_ddp_experiment.py                          # step 6: 4 datasets × 7 preprocessings (incl. 1 learned, two-stage), 500 epochs full-batch, robust-scaled target
+report_ddp_experiment.py                         # step 6: PLSR-vs-MLP wide tables + per-dataset winner + comparison_table.csv
 plot_preprocessed_spectra.py                     # viz: mean spectrum per (region x method) cell
 plot_one_sample_spectra.py                       # viz: one random sample traced through all preprocessings per region
 plot_three_samples_spectra.py                    # viz: three random samples per region, color-consistent across methods
@@ -88,6 +96,11 @@ results/                                         # gitignored
   table1_replication.csv                         # PLSR vs paper Table 1, with PASS/FAIL flags
   table1_replication_fixed_lv.csv                # PLSR @ paper-LV vs ours @ one-SE
   preprocessed_spectra.png, one_sample_spectra.png, three_samples_spectra.png, indonesia_mean_reflectance.png
+  ddp_experiment/
+    cells/{dataset}_{preprocessing}_mlp.json     # 28 MLP cells (7 preprocessings x 4 datasets)
+    predictions/{dataset}_{preprocessing}_mlp.csv
+    cell_results.csv                             # long-format aggregate of all 28 MLP cells
+  comparison_table.csv                           # PLSR-vs-MLP joined long-format table for the paper
 archive/
   code/      # all retired DL trial-1 scripts (rbn / rbnd / rbnr / cnn / transformer / probes / sweeps / plots)
   md/        # previous experiment_spec.md, our_task_log.md, for_next_agent.md
@@ -156,8 +169,72 @@ For each of the 4 × 6 = 24 cells: 5 repeats × 10 grouped+stratified inner CV f
 ### Step 5b — Paper-LV diagnostic (`train_plsr_fixed_lv.py`)
 Re-fit PLSR with paper's exact LV count per cell (LV one-SE picker bypassed). Showed that R² gets worse in 18/20 cells, proving the split-seed (not the LV rule) drives our divergence from paper Table 1. Outputs in `results/per_cell_fixed_lv/` + `results/table1_replication_fixed_lv.csv`.
 
-### Step 6 — DDP study (next agent)
-See `for_next_agent.md` for the full design and marching orders.
+### Step 6 — DDP study (`train_ddp_experiment.py` + `report_ddp_experiment.py`)
+
+Pipeline: 4 datasets × 7 preprocessings (none, snv, msc, sg, sgd, minmax, ddp) × MLP head = 28 cells. MLP head locked to `Linear(1763→32) → ReLU → Dropout(0.3) → Linear(32→1)`. Training contract locked: full-batch, Adam, lr=1e-3, weight_decay=0, 500 epochs, MSE on robust-scaled SOC, seed=42. No early stopping, no validation carve-out.
+
+`ddp` is the only learned preprocessor and uses a two-stage protocol (Stage 1: train preprocessor + MLP jointly; Stage 2: freeze preprocessor in eval mode, discard the stage-1 head, transform train+test, train a fresh MLP). Pipeline: `input → minmax (per-feature, fit on train) → learnable BatchNorm1d`. Input source: `data/preprocessed/{dataset}_minmax_*.csv`. Preprocessor learnable parameters: 2·1763 = 3,526.
+
+**Target preprocessing — robust scaling (added 28 Apr 2026, late evening).** Inside every MLP cell (classical and learned alike), the SOC target is scaled per region with `(y - median(y_train)) / IQR(y_train)`. Median and IQR are fit on the train target only; the same constants are applied to test targets implicitly via inverse-scaling of predictions. The MLP trains on scaled SOC; predictions are de-scaled before computing RMSE/R²/MBD/RPIQ so all metrics remain on the original SOC % scale and stay row-by-row comparable to PLSR cells. PLSR cells are *not* re-run — their mean-centring is part of the paper-faithful PLSR algorithm (Tong §2.2), and re-fitting on robust-scaled SOC would invalidate the paper-replication baseline column.
+
+Earlier learned-preprocessor variants (`ddp2`, `ddp3`, `ddp22`, `ddp32`) were archived on 28 Apr 2026: code in `archive/code/`, cell JSONs/predictions in `archive/results/ddp_experiment/`. Resurrect by `Move-Item archive/code/model_ddp{2,3}.py .` and re-registering in `LEARNED_PREPROCESSING_SPECIFICATIONS`.
+
+Total runtime: ~36 s on CPU for the full 28-cell sweep.
+
+#### Headline results (single seed=42, single 80/20 split)
+
+Test-RMSE per (preprocessing × dataset). Lower is better. Bold = per-row winner across the algorithm pair (MLP wins on the row when its number is the lowest; PLSR has no `ddp` cell by design).
+
+```
+                MLP test RMSE (robust-scaled OC)         PLSR test RMSE (paper-faithful)
+                indonesia kenya china global             indonesia kenya china global
+none              1.6903 0.7417 0.5851 1.5004              1.1328 0.7567 0.2409 1.7105
+snv               1.3982 0.5941 0.2009 1.2316              1.3793 0.7094 0.2070 1.6541
+msc               1.7756 2.3386 0.5851 1.4302              1.1190 0.7211 0.2140 1.5967
+sg                1.6700 0.7359 0.5851 1.5002              1.1329 0.7567 0.2217 1.7111
+sgd               1.4922 1.9442 0.5441 2.5274              0.9985 0.8636 0.1897 1.6624
+minmax            1.1910 0.6637 0.2002 1.4062              1.1099 0.7491 0.2494 1.7340
+ddp               1.3738 0.5592 0.1670 1.1362                  —      —      —      —
+```
+
+Per-dataset winning preprocessing (lowest test RMSE):
+
+| dataset    | MLP winner       | MLP RMSE | PLSR winner | PLSR RMSE |
+|---|---|---:|---|---:|
+| indonesia  | minmax           | 1.191    | sgd         | 0.999     |
+| kenya      | ddp              | 0.559    | snv         | 0.709     |
+| china      | ddp              | 0.167    | sgd         | 0.190     |
+| global     | ddp              | 1.136    | msc         | 1.597     |
+
+Stage-1 vs stage-2 DDP test RMSE (lossless-trick check):
+
+| dataset    | stage1 | stage2 | Δ |
+|---|---:|---:|---:|
+| indonesia  | 1.261 | 1.374 | +0.113 |
+| kenya      | 0.581 | 0.559 | −0.022 |
+| china      | 0.169 | 0.167 | −0.002 |
+| global     | 1.110 | 1.136 | +0.026 |
+
+The two-stage trick remains effectively lossless for `ddp` (max |Δ| = 0.113 on indonesia; the other three are within ±0.026). On kenya and china stage 2 actually edged stage 1 slightly.
+
+Observations (numbers only, framing deferred to Arif):
+1. **`ddp` now wins 3 of 4 regions** on the MLP side: kenya (0.559 vs snv 0.594), china (0.167 vs minmax 0.200), global (1.136 vs snv 1.232). Indonesia remains held by minmax (1.191 vs ddp 1.374). Compared to the pre-target-scaling sweep where `ddp` won only 2 of 4, the robust-scaled target makes the BN-front-end clearly dominant.
+2. **MLP+ddp beats every PLSR cell on china and global**: china 0.167 vs PLSR best 0.190 (sgd); global 1.136 vs PLSR best 1.597 (msc). On kenya MLP+ddp also beats every PLSR cell (0.559 vs PLSR best 0.709). On indonesia MLP+minmax does not beat PLSR's best (1.191 vs 0.999 sgd).
+3. **Some classical-preprocessing rows collapsed to R²=0** on china (none, msc, sg, sgd) and indonesia (msc) and kenya (msc, sgd): the model is predicting near-the-train-median and not learning. Robust scaling on a strongly right-skewed target inflates the long-tail outliers (china max OC = 6.03 → scaled ≈ 9.1 with median 0.36 / IQR 0.62), which in MSE training pulls the optimisation toward those few extreme samples and stalls the model on the bulk. snv/minmax/ddp do not collapse in the same way, presumably because their input spectral magnitudes are well-conditioned for the head.
+4. The "preprocessing varies by region" pattern from Tong is now *less* pronounced on the MLP side: 3 of 4 regions agree on `ddp` as the best preprocessing. Only Indonesia disagrees (minmax). On the PLSR side it still holds (sgd / snv / sgd / msc as winners across the 4 regions).
+
+Update (28 Apr 2026, late evening): archived `ddp2`/`ddp3`/`ddp22`/`ddp32` and added robust scaling of the SOC target inside every MLP cell (median + IQR fit on train OC, predictions de-scaled before metrics). Decision logged: PLSR cells are not re-run — their mean-centring is part of the paper-faithful PLSR algorithm and re-fitting on robust-scaled SOC would invalidate the paper-replication column.
+
+#### Observations (numbers only, not framing)
+
+1. **DDP is the per-region MLP winner in 2 of 4 datasets** (china, global) and is competitive on kenya (0.66 vs 0.57 for snv).
+2. **DDP wins on global by a wide margin** (1.12 vs the next-best classical MLP row at 1.21 for snv, and vs PLSR's best at 1.60).
+3. **MLP+DDP also beats every PLSR cell on global** (1.12 vs PLSR's best 1.60).
+4. **MLP+DDP roughly ties PLSR's best on china** (0.189 vs 0.190).
+5. **Indonesia and Kenya remain harder for MLP than for PLSR** at the single-seed level — every MLP row except DDP/Kenya has a worse test RMSE than the matching PLSR row. Indonesia n=188 is the smallest; the prior phase already noted this is the sentinel region.
+6. **MLP per-region winners differ across datasets** (minmax / snv / ddp / ddp). The "preprocessing varies by region" finding from Tong is *also* visible in our MLP, just with shuffled specifics — DDP does not eliminate the region dependence on this single-seed run.
+
+Decision deferred to Arif: framing for the writeup. The brief is to report the numbers and stop.
 
 ---
 

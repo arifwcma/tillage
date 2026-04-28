@@ -4,9 +4,15 @@ import re
 import time
 import numpy as np
 import pandas as pd
+import torch
 from scipy.signal import savgol_filter
 from sklearn.cross_decomposition import PLSRegression
 from sklearn.model_selection import StratifiedGroupKFold
+
+from model_learnable_minmax import (
+    LearnableMinMax,
+    compute_total_loss,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -15,7 +21,7 @@ RESULTS_DIR = PROJECT_ROOT / "results"
 PER_CELL_DIR = RESULTS_DIR / "per_cell"
 
 DATASET_NAMES = ["china", "kenya", "indonesia", "global"]
-METHOD_NAMES = ["none", "snv", "msc", "sg", "sgd", "minmax"]
+METHOD_NAMES = ["none", "snv", "msc", "sg", "sgd", "minmax", "lmm"]
 
 GROUP_KEY_COLUMN = "Batch and labid"
 SOC_COLUMN = "Org C"
@@ -31,6 +37,10 @@ PLSR_LV_MAX = 25
 SG_WINDOW_GRID = list(range(7, 32, 2))
 SG_POLYORDER_GRID = [2, 3]
 SGD_DERIVATIVE_ORDER = 2
+
+LMM_LEARNING_RATE = 1e-2
+LMM_TRAINING_EPOCHS = 500
+LMM_TRAINING_SEED = 42
 
 N_SOC_QUARTILES = 4
 
@@ -99,6 +109,31 @@ def apply_minmax_per_feature(train_spectra, validation_spectra):
     train_scaled = (train_spectra - column_min) / column_range
     validation_scaled = (validation_spectra - column_min) / column_range
     return train_scaled, validation_scaled
+
+
+def fit_learnable_minmax_on_train(train_spectra):
+    torch.manual_seed(LMM_TRAINING_SEED)
+    train_tensor = torch.from_numpy(train_spectra.astype(np.float32))
+    model = LearnableMinMax(train_tensor)
+    optimizer = torch.optim.Adam(model.parameters(), lr=LMM_LEARNING_RATE)
+    for epoch_index in range(LMM_TRAINING_EPOCHS):
+        optimizer.zero_grad()
+        transformed = model(train_tensor)
+        loss = compute_total_loss(transformed)
+        loss.backward()
+        optimizer.step()
+    learned_low = model.low.detach().cpu().numpy().astype(np.float64)
+    learned_high = model.high.detach().cpu().numpy().astype(np.float64)
+    return learned_low, learned_high
+
+
+def apply_lmm(train_spectra, validation_spectra):
+    learned_low, learned_high = fit_learnable_minmax_on_train(train_spectra)
+    learned_range = learned_high - learned_low
+    learned_range[learned_range == 0] = 1.0
+    train_transformed = (train_spectra - learned_low) / learned_range
+    validation_transformed = (validation_spectra - learned_low) / learned_range
+    return train_transformed, validation_transformed
 
 
 def apply_savgol_with_parameters(train_spectra, validation_spectra, window_length, polynomial_order, derivative_order):
@@ -224,6 +259,8 @@ def select_preprocessing_for_cv(method_name):
         return [{"label": "msc"}]
     if method_name == "minmax":
         return [{"label": "minmax"}]
+    if method_name == "lmm":
+        return [{"label": "lmm"}]
     if method_name == "sg":
         return [
             {"label": "sg", "window": w, "polyorder": p, "deriv": 0}
@@ -249,6 +286,8 @@ def transform_with_preprocessing_specification(method_specification, train_spect
         return apply_msc(train_spectra, validation_spectra)
     if label == "minmax":
         return apply_minmax_per_feature(train_spectra, validation_spectra)
+    if label == "lmm":
+        return apply_lmm(train_spectra, validation_spectra)
     return apply_savgol_with_parameters(
         train_spectra,
         validation_spectra,
@@ -379,6 +418,9 @@ def write_per_cell_results(dataset_name, method_name, winning_record, train_metr
             "sg_window_grid": SG_WINDOW_GRID,
             "sg_polyorder_grid": SG_POLYORDER_GRID,
             "sgd_derivative_order": SGD_DERIVATIVE_ORDER,
+            "lmm_learning_rate": LMM_LEARNING_RATE,
+            "lmm_training_epochs": LMM_TRAINING_EPOCHS,
+            "lmm_training_seed": LMM_TRAINING_SEED,
         },
     }
     output_path = PER_CELL_DIR / f"{dataset_name}_{method_name}.json"
