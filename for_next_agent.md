@@ -1,80 +1,111 @@
-# For the next agent
+# For the next agent — DDP study
 
-Read `.cursor/project.md` and `.cursor/instructions.md` first — they cover the goal and Arif's working style. This file fills the gaps.
+Read in this order:
+1. `.cursor/project.md` and `.cursor/instructions.md` — Arif's working style and global rules.
+2. `task_log.md` — what's already in the repo, the PLSR replication status, the previous DL trials (set aside) and the reusable insights from them.
+3. This file — your marching orders.
 
-## Where things live
+The PLSR replication is **done** (see `task_log.md`). The first DL push was **discarded** on 28 Apr 2026 because the framing (RBN vs baseline vs PLSR) was an apples-to-oranges architecture-vs-algorithm comparison. Code/results/markdowns from that push live in `archive/` for reference only — do not import from there.
 
-1. `experiment_spec.md` — the paper's full experimental design and every ambiguity we identified, with the resolution (or "deferred") next to each. Always check here before assuming anything about the paper.
-2. `our_task_log.md` — running record of every step taken. Has the full reproduction recipe at the top (commands to run from scratch) and a "Decisions on ambiguities" list. Read it end-to-end on day one.
-3. `resource/tong.pdf` and `resource/supplementary.xlsx` — the paper itself and Table S1 (gitignored, must be placed manually).
-4. `additionals/` — gitignored, raw downloaded ICRAF/ISRIC data.
-5. `data/` — gitignored, all derived CSVs (raw per-domain, splits, preprocessed train/test).
-6. `results/` — gitignored, all model outputs (per-cell JSONs, predictions CSVs, comparison tables).
+## The hypothesis
 
-## Status
+**Tong et al. (2026) claim that the best preprocessing is region-dependent.** That conclusion is not algorithm-neutral. PLSR has no mechanism to push supervised signal back into the preprocessing stage, so the preprocessing must be picked manually from a fixed catalogue (snv/msc/sg/sgd) per-region. **When the downstream model is gradient-based (e.g. an MLP), gradients can flow back into a learnable preprocessing module, making the preprocessor itself data-driven.** We propose **DDP** (Data-Driven Preprocessing) — a learnable BN-only module — as one concrete instance of this idea, and aim to show that it is competitive with, or better than, the per-region winners under MLP, with the same single preprocessing choice for every region.
 
-1. Steps 1-5 done: download → join/filter → 80/20 grouped+stratified split → 5 preprocessings (now 6 — see point 4) → PLSR with repeated 10-fold CV + one-SE rule + test eval.
-2. **Step 5b done (27 Apr 2026)** — diagnostic ablation: re-fit PLSR with the paper's reported LV count (LV one-SE picker bypassed), keeping our SG/SGD window/polyorder. Goal was to isolate whether the LV-selection rule or the unknown split seed drives our R² gap from paper Table 1. **Result: forcing paper LVs made R² *worse* in 18/20 cells, not better.** Conclusion: the split seed (unrecoverable from paper) dominates the divergence; the one-SE rule definition is secondary. Our higher LVs were *compensating* for a harder test draw. Artefacts: `train_plsr_fixed_lv.py`, `results/per_cell_fixed_lv/`, `results/table1_replication_fixed_lv.csv`. **All publishable-spec stones are now turned**: data, n, window, algorithm, mean-centring, CV protocol, stratification, grouping, metrics, peat handling, duplicate handling, LV count — all match. Two unobservables remain: split seed (paper says "fixed seed" without value) and SE definition for the one-SE rule. Decision: accept current single-split + seed=42 PLSR results as our reproduction baseline; the qualitative claim (regional preprocessing dependence) survives. **Do not chase exact paper numerics further** unless an author email yields the seed.
-3. **PLSR-minmax added (27 Apr 2026)** — Arif asked for the 6th preprocessing `minmax` to be run through PLSR too; `train_plsr.py` / `summarise_results.py` / `print_plsr_tables.py` now include minmax. `results/table1_replication.csv` has 24 rows (paper columns NaN for the 4 minmax rows since paper Table 1 has no minmax). MinMax math is duplicated in `train_plsr.py::apply_minmax_per_feature` so it can be re-fit per inner CV fold (no leakage).
-4. **Step 6 / Step 7 — DL replacement (planned matrix, no headline numbers yet)**. The DL replacement is the BN-front-end matrix, **2 DL algorithms** plus the paper's PLSR as a side-by-side anchor:
-   - `plsr` — paper's algorithm, already populated for all 24 cells in `results/per_cell/` from Step 5.
-   - `baseline` — MLP only (`Linear(1763 → 32) → ReLU → Linear(32 → 1)`), 200 sup epochs.
-   - `rbn` — same MLP head with a learnable `BatchNorm1d(1763)` in front, 200 sup epochs. **This is the main DL algorithm.**
-   Previous ablations (`pbn`, `plsr_pbn`, `r2bn`, `p2bn`) were dropped on 28 Apr 2026 — full 6-method code + cell JSONs preserved at git tag `before_drops_1`. Resurrect by `git checkout before_drops_1 -- <file>`.
-   Full matrix: 4 datasets × 6 preprocessings × 3 algorithms = **72 cells**. Execution is gated on H1A first: `run_h1a.py` evaluates only the 12 `_none_` cells (1 preprocessing × 4 datasets × 3 algorithms) and dumps `results/h1a_results.csv`. Only if RBN is the per-dataset winner across all 4 datasets do we proceed to H1B (the remaining 60 cells). DL models in `model_baseline_ann.py` and `model_rbn_ann.py`; full 48-DL-cell runner in `train_pbn_experiment.py` (writes `results/pbn_experiment/`). Headline H1A / H1B numbers are intentionally absent pending the gated re-run.
+This is the only hypothesis. Forget H1A / H1B — they are dead.
 
-## Important truths about the paper replication (don't relearn the hard way)
+## The experimental grid
 
-1. **Sample counts** look wrong at first glance but are right. Paper §2.1 prose says China 245 / Kenya 239 / Indonesia 226; Paper Table 1 says 262 / 245 / 236. Both numbers are derivable from the same public data — prose counts are post-deduplication on `Batch and labid`; Table 1 counts keep duplicate rows. We keep duplicates so n matches Table 1 exactly (3997 / 262 / 245 / 236). Full reconciliation in `experiment_spec.md` "Sample-count reconciliation".
-2. **Two kinds of duplicate rows** in the public data, both kept: 82 reference-table rows that differ only in coordinates (likely DB edit history) and 155 spectra-table rows that are genuine repeat scans of the same physical sample. The group key `Batch and labid` keeps a physical sample's rows always together in any split.
-3. **Exact paper numbers don't replicate, and Step 5b proved why.** Our PLSR gets 0/20 cells passing all four acceptance criteria. Re-running with the paper's exact LV counts (Step 5b) made R² *worse* in 18/20 cells, which means: (a) the LV one-SE rule is *not* the dominant divergence cause; (b) the unrecoverable split seed is. Our higher LVs were *compensating* for a harder test draw — paper LVs underfit our split. The paper's *qualitative* claim (preprocessing varies by region) survives in our run with shuffled specifics. Decision is logged: accept current PLSR results as-is, move on to DL. Do not re-litigate this unless someone obtains the paper's split seed (parked: email Tong Li).
-4. **Project-wide constants:** seed = 42, group key = `Batch and labid`, spectral window = 4000-600 cm⁻¹ (1763 wavenumbers), SOC quartile stratification, 5×10 = 50 CV folds.
-5. **Preprocessing artefact CSVs** (`data/preprocessed/`) are illustrative — they use SG/SGD window=11 polyorder=2 as exemplar values. The actual modelling code re-applies preprocessing inside the CV loop with proper grid search (SG/SGD: window 7-31 odd × polyorder {2,3}); MSC reference is re-fit per inner fold. Do not consume preprocessed CSVs directly inside the modelling loop for sg/sgd/msc — re-apply from raw.
+Same 80/20 grouped+stratified split (seed=42, group=`Batch and labid`, strata=SOC quartile) is shared across every cell.
 
-## Operational gotchas
+- **Preprocessing (7):** `none, snv, msc, sg, sgd, minmax, ddp`
+- **Dataset (4):** `global, china, kenya, indonesia`
+- **Algorithm (2):** `plsr` (Tong's; already populated for 6 preprocessings × 4 datasets in `results/per_cell/`), `mlp` (ours; to be populated for 7 × 4 = 28 cells)
 
-1. **Auto-commit hook is active.** Some tool periodically auto-commits the working tree as commit message "done". Result CSVs and model outputs got dragged into git history before we gitignored `results/`. Be defensive: gitignore new heavy folders *before* writing into them.
-2. **PowerShell on Windows** is the default shell. `cat <<EOF` heredocs do not work — use a temp file (`git commit -F file.txt`) when writing multiline commit messages.
-3. **Stdout is buffered** when running long Python scripts via Shell. Watch progress by tailing the per-cell JSON output folder, not the terminal text.
-4. **scipy + sklearn + scipy savgol_filter + pandas + openpyxl** are pinned in `requirements.txt`. Add `torch` (or whatever DL framework) when starting Step 6.
+PLSR cannot run on `ddp` (DDP is gradient-based; PLSR has no gradients). So the final reporting table has 24 PLSR cells + 28 MLP cells = 52 populated cells, with the 4 PLSR-on-DDP cells empty by design.
 
-## Parked items (flag-for-later, not blocking)
+## The MLP
 
-1. Email Tong Li to ask (a) whether the 82 reference-table coordinate-edit duplicates were intentional in their analysis, and (b) the random seed used for the 80/20 split. Item (b) is the only thing that could close the R² gap; without it, exact reproduction is unreachable.
-2. Decide whether to drop those 82 duplicates as a methodological cleanup in our DL paper.
-3. ~~PLSR LV-selection divergence — re-attempt with SE = std/√10 instead of √50.~~ **Resolved 27 Apr 2026**: Step 5b showed LV is not the dominant cause anyway. Don't bother.
-4. Try an alternative one-SE-rule SE definition in a future audit if a reviewer asks. Cheap (~30 min compute) but unlikely to change the story given Step 5b result.
-5. **Multi-seed sensitivity band** (5 different outer-split seeds) to characterise the seed-induced uncertainty in our R²/RMSE — would let us state "paper's number sits at the Xth percentile of our distribution". Defensible reproduction add-on. Cost: ~3 hours compute. *Not done because we deemed it not worth the time vs. moving on to DL — flag for paper writeup if a reviewer pushes back.*
+`Linear(n_features → 32) → ReLU → Dropout(p=0.3) → Linear(32 → 1)`. n_features = 1763.
 
-## What to do next
+- Dropout is included **only** to regularise the low-data regime (esp. Indonesia n=188). It is not part of the BN-efficacy claim. Same `p=0.3` everywhere, every preprocessing row, both DDP stages.
+- Training: full-batch (batch_size = full train size) for **all** preprocessing rows. This keeps the protocol uniform across cells and matches the BN-stability finding from the previous phase (mini-batch BN is noisy at n < ~200).
+- Optimiser: **Adam**, lr=1e-3, weight_decay=0, MSE loss.
+- Epochs: **fixed 500** (no early stopping, no validation set carve-out). Same budget for every cell.
+- Seed: 42.
+- Loss: MSE on raw SOC.
 
-PLSR replication is **done as far as the paper permits** (see Status point 2). The DL replacement is **specified but not yet evaluated** (see Status point 4) — Arif's plan is gated:
+The MLP architecture and hyperparameters are identical for every preprocessing row, so any difference in test metrics is attributable to the preprocessing.
 
-1. **Stage 1 — H1A.** Run `python run_h1a.py` to populate `results/h1a_results.csv` (12 cells: 1 preprocessing `none` × 4 datasets × 3 algorithms `plsr/baseline/rbn`). Decision criterion: RBN is the per-dataset winner on test RMSE in all 4 datasets. If RBN does *not* sweep H1A, iterate on the RBN architecture / training contract before going further — H1B is meaningless until H1A passes.
-2. **Stage 2 — H1B (only after H1A passes).** Run the remaining 5 preprocessings × 4 datasets × 3 algorithms = 60 cells. Existing `train_pbn_experiment.py` already produces the 48 DL cells; PLSR side comes from `results/per_cell/`.
-3. Optional follow-ups, kept on the back burner until H1A + H1B settle:
-   - Companion `summarise_rbn_vs_plsr.py`: side-by-side table RBN-ours vs PLSR-ours vs PLSR-paper, with paired Wilcoxon + Holm tests the paper used.
-   - 1D CNN replacement of the MLP head (Conv1d → BN → ReLU → MaxPool ×3, then 2 dense layers, ~50k params; Adam, MSE, cosine-anneal LR).
-   - Multi-seed sensitivity band on RBN (5 seeds × 72 cells = 360 runs ≈ 1 hour CPU).
-4. The DL code lives in `model_baseline_ann.py` + `model_rbn_ann.py` + `train_pbn_experiment.py` + `run_h1a.py`. The dropped ablation models (`model_pbn_ann.py`, `model_p2bn_ann.py`) were deleted from `master` but still exist at tag `before_drops_1`.
+## DDP — the data-driven preprocessing module
 
-## Inventory of artefacts created during PLSR-replication phase (incl. Step 5b)
+DDP is a single PyTorch module: `nn.BatchNorm1d(n_features)` (no head, no nonlinearity, no extra layers). It has 2·n_features learnable parameters (γ, β) and 2·n_features non-learnable running statistics (running mean, running variance).
 
-PLSR pipeline:
-1. `train_plsr.py` — main pipeline. CV + one-SE rule + refit + test eval. Writes `results/per_cell/{dataset}_{method}.json` + predictions CSV. Skip-if-exists idempotent.
-2. `summarise_results.py` — builds `results/table1_replication.csv` with paper-vs-ours comparison and per-criterion PASS/FAIL flags.
-3. `train_plsr_fixed_lv.py` — Step 5b diagnostic. Bypasses the one-SE rule and forces paper's exact LV count per (dataset, method) cell, keeping our chosen SG/SGD window/polyorder. Writes `results/per_cell_fixed_lv/` and `results/table1_replication_fixed_lv.csv`.
+DDP is fit by **two-stage training** so it slots into the same column as snv/msc/etc. (i.e. "preprocessing fitted on train, applied to train+test, then a model is trained on the transformed data"):
 
-Spectra visualisation (added 27 Apr 2026):
-1. `plot_preprocessed_spectra.py` — 6×4 grid (rows = methods, cols = regions). Mean spectrum per cell, y-axis free per row. Helps see what each preprocessing does at the dataset level.
-2. `plot_one_sample_spectra.py` — 6×4 grid, single random train sample per region traced through all 6 preprocessing methods.
-3. `plot_three_samples_spectra.py` — same grid, but with 3 random samples per region (red/blue/green; colours consistent across the 6 method panels of each region's column).
+1. **Stage 1 — fit the preprocessor.** Train `DDP → MLP` end-to-end on raw train spectra and SOC, full-batch, 500 epochs, Adam lr=1e-3, dropout p=0.3, seed=42, MSE loss. This is the only place DDP's γ, β, running mean, running variance get updated. **Record stage-1 SOC test metrics** (RMSE, R², MBD, RPIQ on the held-out 20% test set, evaluated with DDP+MLP in eval mode). These metrics are part of the experimental output — Arif's prior is that stage-1 and stage-2 SOC metrics will come out very close, and that's worth confirming with numbers.
+2. **Stage 2 — freeze and re-apply.** Put DDP into `eval()` mode (so it uses the running mean/variance, *not* the current batch's statistics). Discard the stage-1 MLP head. Run train and test spectra through frozen DDP to get `ddp_train_X` and `ddp_test_X`. Then train a **fresh** MLP (same architecture, same hyperparameters as every other preprocessing row, freshly seeded with seed=42) on `ddp_train_X` and SOC, full-batch, 500 epochs. Evaluate on `ddp_test_X` and SOC. Record **stage-2 SOC test metrics**. These are the canonical DDP metrics that go into the comparison table alongside snv/msc/etc.
 
-All three plot scripts use seed 42 for sample selection so re-runs are deterministic. Outputs go to `results/{*}.png`.
+Why this two-stage protocol matters for the framing:
+- It forces DDP to look procedurally identical to every other preprocessing row (fit on train, apply, then a fresh model is trained on the transformed data).
+- The frozen DDP is a fixed per-band affine, so MLP-on-DDP-data has the same representational capacity as MLP-on-raw-data. **Any improvement therefore comes from preprocessing-style benefits (conditioning, scale alignment), not from extra model capacity.** That is exactly the claim we want to make.
+- Recording stage-1 metrics in addition to stage-2 metrics lets us check (and report) that the two-stage trick did not cost us SOC performance vs. joint training. If stage-1 ≈ stage-2 across all 4 datasets, the framing is clean.
 
-## What Arif wants from you (style reminders not in instructions.md)
+## Locked decisions (Arif, 28 Apr 2026)
 
-1. He has said multiple times "less text, my eyes hurt." Default to terse. Numbered lists, no decorative tables, no preamble. Use the AskQuestion tool sparingly; pick the best decision and log it instead.
-2. When committing, do not paraphrase the diff in the commit body — describe intent in 1-2 lines + a short bullet list. Use a temp file for the message (PowerShell limitation above).
-3. Update `our_task_log.md` after every meaningful step. The recipe at the top must stay copy-pasteable.
-4. Decisions taken without asking get logged with a one-liner reason in `our_task_log.md` "Decisions on ambiguities".
+1. PLSR stays in the comparison table as a parallel reference column. PLSR cells are already populated for 6 preprocessings × 4 datasets in `results/per_cell/`; do **not** rerun the PLSR pipeline.
+2. Stage-1 and stage-2 MLPs are architecturally identical and use identical hyperparameters. Both stage-1 and stage-2 SOC test metrics are recorded.
+3. Dropout fixed at p=0.3 across all 7 preprocessing rows (and both DDP stages). No per-cell tuning.
+4. **No early stopping. Universal 500 epochs for every cell.** This is non-negotiable for now — the prior phase's epoch-tuning rabbit hole is not to be re-entered.
+5. Old DL artefacts (rbn, rbnd, rbnr, mmbnd, baseline, cnn, transformer variants and all their results) live in `archive/`. Do not consume from there. Do not resurrect any of those models.
+6. Old markdown files (`experiment_spec.md`, `our_task_log.md`, the previous `for_next_agent.md`) are in `archive/md/`. The current canonical references are `task_log.md` and this file.
+7. The DDP hypothesis is the only hypothesis. Do not introduce sub-hypotheses (no H1A / H1B / etc.) unless Arif asks for them.
+
+## Concrete deliverables you should create
+
+These are the files to produce. Names are suggestions — feel free to rename if there's a better convention, but stay consistent with the existing PLSR naming (`train_*.py`, `model_*.py`).
+
+1. **`model_mlp.py`** — defines `MlpSocAnn(n_features)` with the architecture above (`Linear → ReLU → Dropout(0.3) → Linear → squeeze`). Include `count_learnable_parameters()` for parity with the existing PLSR code.
+2. **`model_ddp.py`** — defines `DdpPreprocessor(n_features)`, a tiny module with a single `nn.BatchNorm1d(n_features)`. Forward returns the BN output. Include a method or convention for "freeze in eval mode and apply to a numpy/tensor batch" so stage 2 can call it as a pure preprocessor.
+3. **`train_ddp_experiment.py`** — the runner. For each (dataset × preprocessing) cell:
+   - For preprocessing ∈ {none, snv, msc, sg, sgd, minmax}: load the matching `data/preprocessed/{dataset}_{preprocessing}_{train,test}.csv`, train MLP fresh on it for 500 epochs full-batch, evaluate, record metrics.
+   - For preprocessing == `ddp`: load `data/preprocessed/{dataset}_none_{train,test}.csv` (raw). Stage 1: train `DDP → MLP` end-to-end, record stage-1 test metrics. Stage 2: freeze DDP, transform both splits, train fresh MLP on transformed train, record stage-2 test metrics. Save **both** stage-1 and stage-2 metrics.
+   - All cells: use seed=42, full-batch, lr=1e-3, dropout=0.3, 500 epochs, Adam, MSE.
+   - Output one JSON per cell in `results/ddp_experiment/cells/{dataset}_{preprocessing}_mlp.json` with the same metric schema as `results/per_cell/` (rmse, r2, mbd, rpiq, n) plus a `configuration` block. For the `ddp` cells the JSON should carry both `stage1_test_metrics` and `stage2_test_metrics`. After all cells run, write a summary CSV `results/ddp_experiment/cell_results.csv` (long format).
+4. **A reporting/comparison script** (e.g. `report_ddp_experiment.py`) that joins the MLP-side results with the PLSR-side results from `results/per_cell/` and prints (a) a wide table preprocessing × dataset for `mlp_test_rmse`, (b) the same for `plsr_test_rmse`, and (c) a per-region "winner" highlight. Should also output a side-by-side `results/comparison_table.csv` for the paper.
+
+## Operational gotchas (carried over)
+
+1. **PowerShell on Windows** is the default shell. Heredocs (`cat <<EOF`) do not work — use temp files or `git commit -F file.txt` for multiline strings.
+2. **`$env:VENV_PY`** holds the path to the venv's `python.exe`. Use `& $env:VENV_PY script.py` to invoke Python from a Shell call.
+3. **Auto-commit hook** is active. Some tool periodically auto-commits the working tree. `results/` is gitignored; new heavy result folders should be too. Check `.gitignore` before writing new artefact directories.
+4. **Stdout is buffered** for long Python scripts run via Shell. Watch progress by tailing the per-cell JSON output folder, not the terminal text.
+5. **Don't import from `archive/`.** It's a graveyard, not a library. If you need a helper that lived in `archive/code/train_pbn_experiment.py` (e.g. `compute_metrics_dictionary`, `extract_spectra_and_target`), copy it into a new clean utilities module rather than importing across the archive boundary.
+6. The shared utilities you'll likely want to recreate (one-time): `extract_spectra_and_target(df)`, `compute_rmse / r2 / mbd / rpiq / metrics_dictionary`, `reset_seeds(seed)`. They were ~50 lines total in `archive/code/train_pbn_experiment.py` and are simple enough to rewrite cleanly.
+
+## What to do first (concrete starter checklist)
+
+1. Read `task_log.md` end-to-end. Pay particular attention to the "Previous DL trials and findings" section — those traps are documented so you don't fall into them again.
+2. Skim `archive/code/model_rbnd_ann.py` to see the exact architecture we settled on (it is structurally `DDP → MLP` with dropout). Do **not** import or reuse the file; rebuild cleanly under the new naming (`model_mlp.py` + `model_ddp.py`).
+3. Skim one PLSR cell JSON (`results/per_cell/global_none.json`) so the new MLP cell JSONs match the schema (same metric keys, same nesting).
+4. Write `model_mlp.py` and `model_ddp.py`. Confirm parameter counts: MLP at n_features=1763 has 1763·32 + 32 + 32·1 + 1 = **56,481** learnable params; DDP+MLP adds 2·1763 = **3,526** more for γ, β = **60,007** total in stage 1.
+5. Write `train_ddp_experiment.py`. Implement the 28-cell loop (4 × 7), with the special-case branching for `ddp` doing the two-stage training. Print per-cell progress lines like the existing PLSR runner does. Each cell should be skip-if-exists idempotent (look at `results/ddp_experiment/cells/`).
+6. Run a single cell first as a smoke test (e.g. `indonesia / none`) to confirm the loop works and the JSON shape is right. Then run all 28 cells. Indonesia full-batch at 500 epochs should be sub-second per cell on CPU; total runtime is on the order of minutes.
+7. Write the reporting script. Generate the comparison table.
+8. **Then stop and report to Arif** — show him the comparison table and per-region rankings before doing anything fancier (multi-seed runs, statistical tests, plots beyond the table). Let Arif decide the next move.
+
+## What to *not* do (without asking Arif)
+
+1. Do not introduce early stopping, validation splits, or any kind of LR/epoch tuning. The 500-epoch / lr=1e-3 / dropout=0.3 contract is locked.
+2. Do not add new model architectures (CNN / transformer / deeper MLP / attention). The MLP is locked.
+3. Do not change the train/test split, group key, stratification, or seed. They are project-wide constants.
+4. Do not run multi-seed bands until Arif has seen the single-seed comparison table.
+5. Do not try to "fix" the PLSR results to get closer to paper Table 1. That avenue is closed (see `task_log.md`).
+6. Do not mark `ddp` as the winner in the comparison table; just report the numbers. Arif will read them and decide the framing for the writeup.
+
+## What Arif wants from you (style reminders)
+
+1. "Less text, my eyes hurt." Default to terse. Numbered lists, no decorative tables, no preamble.
+2. Update `task_log.md` after every meaningful step. The reproduction recipe at the top must stay copy-pasteable.
+3. Decisions taken without asking get logged with a one-liner reason in `task_log.md` "Decisions on ambiguities".
+4. When in Ask mode and Arif requests code, do not write code — remind him to switch to Agent mode. (See `.cursor/instructions.md`.)
+5. When Arif's request is ambiguous, pick the best decision and log it; do not over-use `AskQuestion`.

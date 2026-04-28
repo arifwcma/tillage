@@ -17,14 +17,23 @@ from model_rbnd_ann import RbndSocAnn
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-PROBE_OUTPUT_PATH = PROJECT_ROOT / "results" / "probe_indonesia_rbnd_full_batch_lr1e5_6k_curve.csv"
+PROBE_OUTPUT_PATH = PROJECT_ROOT / "results" / "probe_indonesia_rbnd_full_batch_lr1e5_6k_l1l2_curve.csv"
 
 DATASET_NAME = "indonesia"
 PREPROCESSING_NAME = "none"
 PROBE_EPOCHS = 6000
 PROBE_LEARNING_RATE = 1e-5
-PROBE_WEIGHT_DECAY = 0.0
+PROBE_L1_LAMBDA = 1e-4
+PROBE_L2_WEIGHT_DECAY = 1e-3
 PROBE_PRINT_EVERY_N_EPOCHS = 100
+
+
+def compute_l1_penalty_on_linear_weights(regressor_model):
+    l1_penalty = 0.0
+    for module in regressor_model.modules():
+        if isinstance(module, nn.Linear):
+            l1_penalty = l1_penalty + module.weight.abs().sum()
+    return l1_penalty
 
 
 def evaluate_train_and_test_metrics(regressor_model, train_spectra, train_target, test_spectra, test_target):
@@ -42,7 +51,9 @@ def run_one_full_batch_epoch(regressor_model, optimizer, mse_loss_function, full
         optimizer.zero_grad()
         predicted_soc = regressor_model(batch_spectra)
         mse_loss = mse_loss_function(predicted_soc, batch_target)
-        mse_loss.backward()
+        l1_penalty = compute_l1_penalty_on_linear_weights(regressor_model)
+        total_loss = mse_loss + PROBE_L1_LAMBDA * l1_penalty
+        total_loss.backward()
         optimizer.step()
 
 
@@ -57,7 +68,7 @@ def train_rbnd_full_batch_with_periodic_evaluation():
     regressor_model = RbndSocAnn(n_features).to(DEVICE)
     regressor_model.train()
     optimizer = torch.optim.Adam(
-        regressor_model.parameters(), lr=PROBE_LEARNING_RATE, weight_decay=PROBE_WEIGHT_DECAY
+        regressor_model.parameters(), lr=PROBE_LEARNING_RATE, weight_decay=PROBE_L2_WEIGHT_DECAY
     )
     mse_loss_function = nn.MSELoss()
     full_batch_loader = build_loader_features_and_targets(
@@ -113,7 +124,8 @@ def main():
     print(
         f"\n>>> {DATASET_NAME} / {PREPROCESSING_NAME}  "
         f"(rbnd, 32 hidden, dropout=0.3, FULL-batch={full_batch_size}, "
-        f"epochs={PROBE_EPOCHS}, lr={PROBE_LEARNING_RATE}, weight_decay={PROBE_WEIGHT_DECAY}, seed=42)"
+        f"epochs={PROBE_EPOCHS}, lr={PROBE_LEARNING_RATE}, "
+        f"l1={PROBE_L1_LAMBDA}, l2={PROBE_L2_WEIGHT_DECAY}, seed=42)"
     )
 
     pd.DataFrame(metrics_per_epoch).to_csv(PROBE_OUTPUT_PATH, index=False)
